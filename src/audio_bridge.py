@@ -157,50 +157,64 @@ async def mic_to_gemini(session, stop_ev, sample_bytes=3200):
 
 # ---------------------------------------------------------------- AI audio -> WebRTC talkback
 class GeminiAudioTrack(AudioStreamTrack):
-    """Sendonly track. Pulls pcm16 24k chunks from queue, resamples to 48k for opus.
-    Emits 20ms frames of 48k mono s16."""
+    """Sendonly track. Pulls pcm16 24k chunks from queue, upsamples to 48k for opus.
+    recv() is NON-BLOCKING: it drains whatever 24k audio is queued, resamples it,
+    and always emits one 20ms 48k frame (zero-padded if idle). This gives steady
+    real-time pacing to the WebRTC sender (fixes choppy delivery).
+    """
+    RATE_IN = 24000
+    RATE_OUT = 48000
+    FRAME_SAMPLES_OUT = 960          # 20ms @48k
+
     def __init__(self, audio_q, sample_rate_out=48000):
         super().__init__()
         self.audio_q = audio_q
         self.sample_rate_out = sample_rate_out
-        self._resampler = av.AudioResampler(
-            format='s16', layout='mono', rate=sample_rate_out)
-        self._out_pts = 0          # PTS in OUTPUT sample clock
-        self._buf = b''            # resampled 48k pcm16 output bytes awaiting emission
+        self._in_buf = bytearray()   # pending 24k pcm16 not yet upsampled
+        self._out_buf = bytearray()  # upsampled 48k pcm16 awaiting emission
+        self._out_pts = 0
         self._ended = False
+        self._last_sample = 0        # for zero-order hold on upsampling
+
+    def _drain_queue(self):
+        """Move whatever 24k audio is queued into _out_buf (non-blocking)."""
+        import numpy as np
+        while not self.audio_q.empty():
+            try:
+                chunk = self.audio_q.get_nowait()
+            except Exception:
+                break
+            if not chunk:
+                continue
+            if len(chunk) % 2:
+                chunk = chunk[:-1]
+            if not chunk:
+                continue
+            self._in_buf.extend(chunk)
+        # resample any complete input to 48k via linear interpolation
+        if len(self._in_buf) >= 2:
+            arr = np.frombuffer(bytes(self._in_buf), dtype=np.int16)
+            self._in_buf.clear()
+            if arr.size > 1:
+                # linear interpolation 24k -> 48k: sample n_out = interp between in samples
+                n_in = arr.size
+                x_in = np.arange(n_in, dtype=np.float64)
+                x_out = np.arange(0, (n_in - 1) + 0.5 + 1e-9, 0.5)  # 2x points
+                x_out = x_out[x_out <= n_in - 1]
+                up = np.interp(x_out, x_in, arr.astype(np.float64)).astype(np.int16)
+                self._out_buf.extend(up.tobytes())
 
     async def recv(self):
         if self._ended:
             raise asyncio.CancelledError
         import numpy as np
-        target_bytes = int(self.sample_rate_out * 0.02) * 2  # 20ms @48k mono = 1920 bytes
-        # gather input until we have >= one output frame buffered
-        guard = 0
-        while len(self._buf) < target_bytes and guard < 200:
-            try:
-                chunk = await asyncio.wait_for(self.audio_q.get(), timeout=0.4)
-            except asyncio.TimeoutError:
-                chunk = b'\x00' * 4800   # 0.1s 24k silence keeps track alive
-            except asyncio.CancelledError:
-                raise
-            # chunk is pcm16 24k mono -> resample to 48k
-            arr = np.frombuffer(chunk if len(chunk) % 2 == 0 else chunk + b'\x00',
-                                dtype=np.int16).reshape(1, -1)
-            frame = av.AudioFrame.from_ndarray(arr, format='s16', layout='mono')
-            frame.sample_rate = 24000
-            frame.time_base = Fraction(1, 24000)
-            frame.pts = None  # let av assign; we track output pts separately
-            try:
-                for fr in self._resampler.resample(frame):
-                    if fr is not None:
-                        self._buf += bytes(fr.planes[0])
-            except Exception as e:
-                log.debug("resample err: %s", e)
-            guard += 1
-        # emit exactly one 20ms output frame
-        out_bytes = self._buf[:target_bytes]
-        self._buf = self._buf[target_bytes:]
+        self._drain_queue()
+        # assemble one 20ms frame (960 samples @48k = 1920 bytes)
+        target_bytes = self.FRAME_SAMPLES_OUT * 2
+        out_bytes = bytes(self._out_buf[:target_bytes])
+        del self._out_buf[:target_bytes]
         if len(out_bytes) < target_bytes:
+            # pad with zeros (idle)
             out_bytes += b'\x00' * (target_bytes - len(out_bytes))
         arr = np.frombuffer(out_bytes, dtype=np.int16).reshape(1, -1)
         fr = av.AudioFrame.from_ndarray(arr, format='s16', layout='mono')
