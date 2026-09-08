@@ -69,12 +69,42 @@ def gemini_connect_cm(system_prompt: str):
     return cm
 
 
-async def gemini_receive_loop(session, audio_out_q, stop_ev):
+# ---------------------------------------------------------------- shared speaking state (echo gate)
+class SpeakingState:
+    """Tracks whether the AI is currently producing speaker audio so the mic feed
+    to Gemini can be muted (half-duplex) -> prevents the doorbell mic re-feeding
+    the AI's own voice from the speaker (echo -> choppy/fragmented output)."""
+    def __init__(self, tail_s=1.0):
+        self.tail_s = tail_s
+        self._active = False
+        self._last_active = 0.0  # monotonic time of last AI audio chunk
+        self.lock = asyncio.Lock()
+
+    async def mark_active(self):
+        async with self.lock:
+            self._active = True
+            self._last_active = __import__('time').monotonic()
+
+    async def mark_idle(self):
+        async with self.lock:
+            self._active = False
+
+    async def muted(self):
+        """True if mic should be muted (AI speaking now or within tail window)."""
+        import time
+        async with self.lock:
+            if self._active:
+                return True
+            if self._last_active:
+                return (time.monotonic() - self._last_active) < self.tail_s
+            return False
+
+
+async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
     """Pull Gemini responses continuously across the whole session.
-    Pushes outbound pcm16 (24k) chunks to audio_out_q. Only sets stop_ev on a
-    real fatal error or when the session closes, NOT on normal turn completion.
-    Gemini's receive() iterator may end after one turn; loop to keep listening."""
-    from google.genai import types
+    Pushes outbound pcm16 (24k) chunks to audio_out_q. Marks `speaking` active while
+    the AI produces audio so the mic is gated (echo prevention). Only sets stop_ev on
+    a real fatal error or when the session closes, NOT on normal turn completion."""
     try:
         while not stop_ev.is_set():
             got_content = False
@@ -93,28 +123,32 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev):
                             if getattr(part, 'inline_data', None) and part.inline_data.data:
                                 data = part.inline_data.data
                                 audio_out_q.put_nowait(bytes(data))
+                                await speaking.mark_active()
                     if getattr(sc, 'turn_complete', False):
                         log.info("turn complete")
+                        await speaking.mark_idle()
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 log.warning("gemini receive stream ended: %s", e)
-                # A terminated stream isn't necessarily fatal if we can reconnect; but
-                # the session object is tied to it. Treat as fatal to avoid hang.
                 stop_ev.set()
                 return
             if not got_content and stop_ev.is_set():
                 return
-            # brief pause before re-entering receive (let session keep talking)
             await asyncio.sleep(0.2)
     except asyncio.CancelledError:
         pass
+    finally:
+        await speaking.mark_idle()
+
 
 
 
 # ---------------------------------------------------------------- mic capture -> Gemini
-async def mic_to_gemini(session, stop_ev, sample_bytes=3200):
+async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200):
     """ffmpeg reads AD410 mic (RTSP) as raw pcm16 16k mono; forward chunks to Gemini.
+    Half-duplex: while the AI is speaking (echo gate), the mic feed to Gemini is muted
+    (we keep reading from ffmpeg so it doesn't backpressure, but drop the chunks).
     sample_bytes = 0.1s of 16k mono 16-bit = 3200 bytes."""
     import threading
     cmd = [
@@ -132,6 +166,7 @@ async def mic_to_gemini(session, stop_ev, sample_bytes=3200):
             pass
     threading.Thread(target=drain_err, daemon=True).start()
 
+    from google.genai import types
     try:
         while not stop_ev.is_set():
             data = proc.stdout.read(sample_bytes)
@@ -139,7 +174,9 @@ async def mic_to_gemini(session, stop_ev, sample_bytes=3200):
                 log.warning("mic capture ended (ffmpeg closed)")
                 break
             if len(data) == sample_bytes:
-                from google.genai import types
+                # Echo gate: if the AI is speaking (or within the tail), drop the mic chunk.
+                if await speaking.muted():
+                    continue
                 try:
                     await session.send_realtime_input(
                         audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000"))
@@ -329,9 +366,10 @@ async def run_once(duration_s, system_prompt):
             log.error("talkback connect failed: %s", e)
             return 2
 
-        # 3. receive loop + mic capture, concurrently
-        recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev))
-        mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev))
+        # 3. receive loop + mic capture, concurrently (echo-gated half-duplex)
+        speaking = SpeakingState()
+        recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev, speaking))
+        mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev, speaking))
         log.info("bridge running up to %ss. Speak at the door.", duration_s)
 
         # Prime: tell Gemini to greet the visitor once connected.
