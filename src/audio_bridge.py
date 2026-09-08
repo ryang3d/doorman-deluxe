@@ -70,30 +70,46 @@ def gemini_connect_cm(system_prompt: str):
 
 
 async def gemini_receive_loop(session, audio_out_q, stop_ev):
-    """Pull Gemini responses; push outbound pcm16 (24k) chunks to audio_out_q."""
+    """Pull Gemini responses continuously across the whole session.
+    Pushes outbound pcm16 (24k) chunks to audio_out_q. Only sets stop_ev on a
+    real fatal error or when the session closes, NOT on normal turn completion.
+    Gemini's receive() iterator may end after one turn; loop to keep listening."""
+    from google.genai import types
     try:
-        async for response in session.receive():
-            sc = getattr(response, 'server_content', None)
-            if not sc:
-                continue
-            ot = getattr(sc, 'output_transcription', None)
-            if ot and ot.text:
-                log.info("[gemini said] %s", ot.text)
-            mt = getattr(sc, 'model_turn', None)
-            if mt:
-                for part in (mt.parts or []):
-                    if getattr(part, 'inline_data', None) and part.inline_data.data:
-                        data = part.inline_data.data
-                        # native audio pcm16 at 24kHz mono (verified Task 1.3)
-                        audio_out_q.put_nowait(bytes(data))
-            if getattr(sc, 'turn_complete', False):
-                log.info("turn complete")
+        while not stop_ev.is_set():
+            got_content = False
+            try:
+                async for response in session.receive():
+                    sc = getattr(response, 'server_content', None)
+                    if not sc:
+                        continue
+                    got_content = True
+                    ot = getattr(sc, 'output_transcription', None)
+                    if ot and ot.text:
+                        log.info("[gemini said] %s", ot.text)
+                    mt = getattr(sc, 'model_turn', None)
+                    if mt:
+                        for part in (mt.parts or []):
+                            if getattr(part, 'inline_data', None) and part.inline_data.data:
+                                data = part.inline_data.data
+                                audio_out_q.put_nowait(bytes(data))
+                    if getattr(sc, 'turn_complete', False):
+                        log.info("turn complete")
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                log.warning("gemini receive stream ended: %s", e)
+                # A terminated stream isn't necessarily fatal if we can reconnect; but
+                # the session object is tied to it. Treat as fatal to avoid hang.
+                stop_ev.set()
+                return
+            if not got_content and stop_ev.is_set():
+                return
+            # brief pause before re-entering receive (let session keep talking)
+            await asyncio.sleep(0.2)
     except asyncio.CancelledError:
         pass
-    except Exception as e:
-        log.warning("gemini receive ended: %s", e)
-    finally:
-        stop_ev.set()
+
 
 
 # ---------------------------------------------------------------- mic capture -> Gemini
