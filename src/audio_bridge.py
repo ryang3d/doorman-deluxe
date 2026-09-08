@@ -123,6 +123,7 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
                             if getattr(part, 'inline_data', None) and part.inline_data.data:
                                 data = part.inline_data.data
                                 audio_out_q.put_nowait(bytes(data))
+                                log.info("[recvloop] queued %d bytes audio", len(data))
                                 await speaking.mark_active()
                     if getattr(sc, 'turn_complete', False):
                         log.info("turn complete")
@@ -215,6 +216,25 @@ class GeminiAudioTrack(AudioStreamTrack):
         self._out_pts = 0
         self._ended = False
         self._last_sample = 0        # for zero-order hold on upsampling
+        self.recv_count = 0          # diagnostic
+        self.nonzero_frames = 0      # diagnostic
+        self._frame_start = None     # real-time pacing clock
+
+    async def _pace(self):
+        """aiortc does NOT pace audio - it calls recv() in a tight loop. So we must
+        pace ourselves: emit one 20ms frame per 20ms of wall clock, otherwise we
+        fast-forward through silence and the real speech lands at an RTP timestamp
+        far past the session (silent doorbell). Returns after the pacing sleep."""
+        import time
+        frame_dur = self.FRAME_SAMPLES_OUT / self.sample_rate_out  # 0.02s
+        now = time.monotonic()
+        if self._frame_start is None:
+            self._frame_start = now
+        next_t = self._frame_start + frame_dur
+        delay = next_t - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self._frame_start = max(next_t, now)
 
     def _drain_queue(self):
         """Move whatever 24k audio is queued into _out_buf (non-blocking)."""
@@ -248,6 +268,10 @@ class GeminiAudioTrack(AudioStreamTrack):
         if self._ended:
             raise asyncio.CancelledError
         import numpy as np
+        # Pace to real time FIRST so we never run ahead of the wall clock (aiortc
+        # would otherwise consume silence frames instantly and push speech's RTP
+        # timestamp far into the future -> speech never heard in-session).
+        await self._pace()
         self._drain_queue()
         # assemble one 20ms frame (960 samples @48k = 1920 bytes)
         target_bytes = self.FRAME_SAMPLES_OUT * 2
@@ -256,6 +280,11 @@ class GeminiAudioTrack(AudioStreamTrack):
         if len(out_bytes) < target_bytes:
             # pad with zeros (idle)
             out_bytes += b'\x00' * (target_bytes - len(out_bytes))
+        self.recv_count += 1
+        if any(out_bytes):
+            self.nonzero_frames += 1
+            if self.recv_count <= 5 or self.nonzero_frames <= 5:
+                log.info("[track] recv #%d has NONZERO audio (%d bytes nonzero)", self.recv_count, sum(1 for b in out_bytes if b))
         arr = np.frombuffer(out_bytes, dtype=np.int16).reshape(1, -1)
         fr = av.AudioFrame.from_ndarray(arr, format='s16', layout='mono')
         fr.sample_rate = self.sample_rate_out
