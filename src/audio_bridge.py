@@ -169,7 +169,10 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200):
     from google.genai import types
     try:
         while not stop_ev.is_set():
-            data = proc.stdout.read(sample_bytes)
+            # Read off the event loop: proc.stdout.read() blocks for seconds while the
+            # AD410 RTSP connects/stutters, freezing aiortc's RTP/ICE and the go2rtc WS
+            # keepalive task -> go2rtc drops the talkback consumer (consumers=0).
+            data = await asyncio.to_thread(proc.stdout.read, sample_bytes)
             if not data:
                 log.warning("mic capture ended (ffmpeg closed)")
                 break
@@ -263,8 +266,10 @@ class GeminiAudioTrack(AudioStreamTrack):
 
 
 async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
-    """Open WebRTC consumer connection to go2rtc carrying the Gemini audio track (sendonly)."""
-    from google.genai import types as _  # noqa
+    """Open WebRTC consumer connection to go2rtc carrying the Gemini audio track (sendonly).
+    Returns (pc, ws, mic, keepalive_task). The WebSocket MUST stay open for the session's
+    lifetime (it is go2rtc's signaling + connection keepalive); closing it tears down the
+    consumer. Caller closes pc/ws and cancels the task on shutdown."""
     base = cfg['FRIGATE_URL'].rstrip('/')
     wsbase = base.replace('http://','ws://').replace('https://','wss://')
     ws_url = f"{wsbase}/api/go2rtc/api/ws?src={stream}"
@@ -278,7 +283,8 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
     pc.addTrack(mic)
 
     log.info("connecting WS %s", ws_url)
-    async with websockets.connect(ws_url, open_timeout=10) as ws:
+    ws = await websockets.connect(ws_url, open_timeout=10)
+    try:
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         for _ in range(80):
@@ -287,13 +293,22 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
             await asyncio.sleep(0.1)
         await ws.send(json.dumps({'type':'webrtc/offer','value':pc.localDescription.sdp}))
         log.info("offer sent")
-        # consume signaling concurrently
+
+        # Keep consuming signaling so go2rtc's WS stays alive + apply late candidates
         answered = asyncio.Event(); werr=None
         async def consume():
             nonlocal werr
             try:
                 while True:
-                    raw=await asyncio.wait_for(ws.recv(),timeout=20)
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=15)
+                    except asyncio.TimeoutError:
+                        # send a ping/keepalive
+                        try:
+                            await ws.ping()
+                        except Exception:
+                            pass
+                        continue
                     m=json.loads(raw); t=m.get('type')
                     if t=='webrtc/answer':
                         await pc.setRemoteDescription(RTCSessionDescription(type='answer',sdp=m['value']))
@@ -303,14 +318,16 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
                         if cs: await add_candidate(pc, cs)
                     elif t=='error':
                         werr=m.get('value'); log.error("go2rtc: %s", werr); answered.set()
-            except (asyncio.TimeoutError, Exception):
-                answered.set()
-        ctask=asyncio.create_task(consume())
+            except Exception as e:
+                log.warning("signaling consumer ended: %s", e)
+        keep_task = asyncio.create_task(consume())
         try:
             await asyncio.wait_for(answered.wait(),timeout=30)
         except asyncio.TimeoutError:
             log.warning("no answer")
-        if werr: raise RuntimeError(f"go2rtc: {werr}")
+        if werr:
+            keep_task.cancel(); await ws.close(); await pc.close()
+            raise RuntimeError(f"go2rtc: {werr}")
         for _ in range(40):
             if pc.iceConnectionState in ('connected','completed'): break
             if pc.iceConnectionState in ('failed','disconnected','closed'):
@@ -318,13 +335,17 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
             await asyncio.sleep(0.5)
         log.info("ICE state: %s", pc.iceConnectionState)
         if pc.iceConnectionState not in ('connected','completed'):
-            ctask.cancel()
-            await pc.close()
+            keep_task.cancel(); await ws.close(); await pc.close()
             raise RuntimeError("ICE never connected")
         log.info("talkback connected (AI audio -> doorbell speaker)")
-        ctask.cancel()
-        # Keep pc alive; yield the connection. We return pc and ws but caller holds session open.
-        return pc, ws, mic
+        return pc, ws, mic, keep_task
+    except Exception:
+        # cleanup on any failure before returning
+        try: await ws.close()
+        except Exception: pass
+        try: await pc.close()
+        except Exception: pass
+        raise
 
 
 async def add_candidate(pc, cand_str):
@@ -361,7 +382,7 @@ async def run_once(duration_s, system_prompt):
     async with cm as session:
         # 2. talkback to go2rtc (needs the audio track; go2rtc pushes to speaker)
         try:
-            pc, ws, mic = await talkback_connect(cfg, audio_q)
+            pc, ws, mic, keep_task = await talkback_connect(cfg, audio_q)
         except Exception as e:
             log.error("talkback connect failed: %s", e)
             return 2
@@ -386,7 +407,7 @@ async def run_once(duration_s, system_prompt):
         except asyncio.TimeoutError:
             log.info("duration elapsed")
         log.info("shutting down bridge")
-        recv_task.cancel(); mic_task.cancel()
+        recv_task.cancel(); mic_task.cancel(); keep_task.cancel()
         try:
             await pc.close()
         except Exception:
