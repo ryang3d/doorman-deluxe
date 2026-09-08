@@ -49,11 +49,10 @@ def load_config():
 CAM_MIC_RTSP = "rtsp://admin:<doorbell-pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1"
 
 # ---------------------------------------------------------------- Gemini Live session
-async def gemini_session(system_prompt: str, audio_out_q: "asyncio.Queue[bytes]",
-                         transcript_cb=None):
-    """Open Gemini Live, return (client, session). audio_out_q gets raw pcm16 24k chunks."""
+def gemini_connect_cm(system_prompt: str):
+    """Return the async-context-manager for a Gemini Live session (caller does `async with`).
+    Exposes client+session inside the context."""
     from google import genai
-    from google.genai import types
     cfg = load_config()
     key = cfg.get('GEMINI_API_KEY')
     if not key:
@@ -65,9 +64,9 @@ async def gemini_session(system_prompt: str, audio_out_q: "asyncio.Queue[bytes]"
     }
     if system_prompt:
         connect_cfg["system_instruction"] = {"parts": [{"text": system_prompt}]}
-    session = await client.aio.live.connect(model=model, config=connect_cfg)
-    log.info("Gemini Live session open (%s)", model)
-    return client, session
+    cm = client.aio.live.connect(model=model, config=connect_cfg)
+    log.info("Gemini Live connect CM ready (%s)", model)
+    return cm
 
 
 async def gemini_receive_loop(session, audio_out_q, stop_ev):
@@ -291,49 +290,45 @@ async def run_once(duration_s, system_prompt):
     audio_q = asyncio.Queue()   # gemini pcm16 24k -> talkback
     stop_ev = asyncio.Event()
 
-    # 1. Gemini session
-    _, session = await gemini_session(system_prompt, audio_q)
-    # 2. talkback to go2rtc (needs the audio track; go2rtc pushes to speaker)
-    try:
-        pc, ws, mic = await talkback_connect(cfg, audio_q)
-    except Exception as e:
-        log.error("talkback connect failed: %s", e)
-        await session.close()
-        return 2
+    cm = gemini_connect_cm(system_prompt)
+    async with cm as session:
+        # 2. talkback to go2rtc (needs the audio track; go2rtc pushes to speaker)
+        try:
+            pc, ws, mic = await talkback_connect(cfg, audio_q)
+        except Exception as e:
+            log.error("talkback connect failed: %s", e)
+            return 2
 
-    # 3. receive loop + mic capture, concurrently
-    recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev))
-    mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev))
-    log.info("bridge running up to %ss. Speak at the door.", duration_s)
+        # 3. receive loop + mic capture, concurrently
+        recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev))
+        mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev))
+        log.info("bridge running up to %ss. Speak at the door.", duration_s)
 
-    # Prime: tell Gemini to greet the visitor once connected.
-    try:
-        await asyncio.sleep(1.0)
-        await session.send_realtime_input(text=(
-            "You are now live at the door. Give a short friendly greeting inviting the "
-            "visitor to state their business, then wait for them to speak."))
-    except Exception as e:
-        log.warning("prime err: %s", e)
+        # Prime: tell Gemini to greet the visitor once connected.
+        try:
+            await asyncio.sleep(1.0)
+            await session.send_realtime_input(text=(
+                "You are now live at the door. Give a short friendly greeting inviting the "
+                "visitor to state their business, then wait for them to speak."))
+        except Exception as e:
+            log.warning("prime err: %s", e)
 
-    try:
-        await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
-    except asyncio.TimeoutError:
-        log.info("duration elapsed")
-    log.info("shutting down bridge")
-    recv_task.cancel(); mic_task.cancel()
-    try:
-        await session.close()
-    except Exception:
-        pass
-    try:
-        await pc.close()
-    except Exception:
-        pass
-    try:
-        await ws.close()
-    except Exception:
-        pass
+        try:
+            await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+        except asyncio.TimeoutError:
+            log.info("duration elapsed")
+        log.info("shutting down bridge")
+        recv_task.cancel(); mic_task.cancel()
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
     return 0
+
 
 
 def main():
