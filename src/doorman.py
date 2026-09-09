@@ -220,9 +220,15 @@ def _parse_sub_label(sub):
     return sub if isinstance(sub, str) else None
 
 
-async def frigate_event_listener(handle_event):
-    """Subscribe to frigate/events; trigger Doorman when a person is at the door,
-    WAITING for face recognition before deciding whether to greet as known or unknown.
+async def frigate_event_listener(handle_event, personalized_greeting=True):
+    """Subscribe to frigate/events; trigger Doorman when a person is at the door.
+
+    personalized_greeting=True (default): WAIT for face recognition before deciding
+    whether to greet as known or unknown (greets by name if recognized; adds ~10-20s
+    before first speech).
+
+    personalized_greeting=False: trigger IMMEDIATELY on the first person detection with
+    a generic greeting (no recognition wait, no by-name). Fast first response.
 
     Frigate event lifecycle for a recognized person (verified 2026-09-08):
       new    sub=None                (person first detected)
@@ -230,8 +236,6 @@ async def frigate_event_listener(handle_event):
       update sub=['Ryan', 0.96]      (recognition result arrives, ~10-20s later)
       update sub=['Ryan', 0.95]
       end    sub=['Ryan', 0.95]
-    We trigger ONCE per event id once recognition settles: if a recognized sub_label
-    appears we greet by name; if the event ends / no recognition we greet as unknown.
     """
     import paho.mqtt.client as mqtt
     loop = asyncio.get_event_loop()
@@ -275,6 +279,25 @@ async def frigate_event_listener(handle_event):
             continue
         now = time.monotonic()
         name = _parse_sub_label(after.get('sub_label'))
+
+        # ---- Fast path: personalized greeting OFF -> greet immediately on detection ----
+        if not personalized_greeting:
+            if etype == 'new' and label in ('person', 'cat', 'dog', 'face'):
+                if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
+                    log.info("trigger debounced (cooldown)")
+                    continue
+                last_trigger_ts = now
+                log.info("TRIGGER (no recognition wait): %s at the door", label)
+                trigger_text = doorman_prompt.interaction_trigger_text(
+                    recognized_name=None, doorbell_pressed=False, label=label)
+                prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
+                await handle_event(prompt, trigger_text, {'label': label, 'name': None})
+            # expire nothing; simple path
+            expired = [eid for eid, p in pending.items()
+                       if (now - p.get('new_ts', 0)) > 60]
+            for eid in expired:
+                del pending[eid]
+            continue
 
         if etype == 'new':
             # start a pending track for this visitor
@@ -332,6 +355,11 @@ async def amain(args):
                                      idle_timeout_s=IDLE_TIMEOUT_S)
 
     # Full service: listen for door events.
+    # Personalized greeting config: false -> greet immediately (no recognition wait).
+    cfg = ab.load_config()
+    personalized = cfg.get('DOORMAN_PERSONALIZED_GREETING', 'true').strip().lower() in (
+        'true', '1', 'yes', 'on')
+    log.info("personalized greeting enabled: %s", personalized)
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
@@ -346,7 +374,7 @@ async def amain(args):
             log.warning("interaction overran cap")
         log.info("interaction done")
 
-    await frigate_event_listener(handle_event)
+    await frigate_event_listener(handle_event, personalized_greeting=personalized)
 
 
 def main():
