@@ -129,6 +129,7 @@ async def snapshot_front_door(cfg=None):
         with open(path, 'wb') as f:
             f.write(data)
         log.info("snapshot saved: %s (%d bytes, %s)", path, len(data), source)
+        _prune_snapshots()
         return True, path
     except Exception as e:
         log.warning("snapshot_front_door error: %s", e)
@@ -146,6 +147,37 @@ def _latest_snapshot():
         return max(files, key=os.path.getmtime)
     except Exception:
         return None
+
+
+def _prune_snapshots():
+    """Delete the oldest snapshots beyond the retention count (keep the N most recent).
+
+    Retention from config DOORMAN_SNAPSHOT_RETENTION; 0 = keep all / no pruning.
+    Called after a new snapshot is saved so the dir never grows unbounded.
+    """
+    keep = int(_cfg().get('DOORMAN_SNAPSHOT_RETENTION') or 0)
+    if keep <= 0:
+        return
+    sdir = _snapshot_dir()
+    try:
+        files = [os.path.join(sdir, f) for f in os.listdir(sdir)
+                 if f.startswith('front_door_') and f.endswith('.jpg')]
+        if len(files) <= keep:
+            return
+        # oldest first
+        files.sort(key=os.path.getmtime)
+        removed = 0
+        for path in files[:len(files) - keep]:
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            log.info("pruned %d old snapshot(s), kept %d (retention=%d)",
+                     removed, keep, keep)
+    except Exception as e:
+        log.warning("prune snapshots error: %s", e)
 
 
 # ---------------------------------------------------------------- HA-native snapshot for notifications

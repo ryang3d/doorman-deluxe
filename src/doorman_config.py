@@ -48,6 +48,8 @@ DEFAULTS = {
     'INTERACTION_COOLDOWN_S': 20.0,
     # snapshots
     'DOORMAN_SNAPSHOT_DIR': '~/doorman/snapshots',
+    # keep at most this many recent snapshots in the dir (0 = keep all / no pruning)
+    'DOORMAN_SNAPSHOT_RETENTION': 25,
     # legacy file paths (only used as fallback sources, not needed in docker)
     'PROFILE_ENV': PROFILE_ENV,
     'FRIGATE_ENV': FRIGATE_ENV,

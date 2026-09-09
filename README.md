@@ -50,6 +50,7 @@ Key options (see `.env.example` for the full list):
 - `DOORMAN_DOORBELL_SENSOR` - HA entity watched in `doorbell` trigger mode.
 - `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.
+- `DOORMAN_SNAPSHOT_RETENTION` - keep at most this many recent local snapshots (0 = keep all / no pruning).
 
 ## Bare-metal deploy (alternative)
 
