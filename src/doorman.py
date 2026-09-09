@@ -438,10 +438,14 @@ async def amain(args):
             log.warning("interaction overran cap")
         log.info("interaction done")
 
-    if trigger_mode == 'doorbell':
-        await doorbell_event_listener(handle_event, sensor=doorbell_sensor)
-    else:
-        await frigate_event_listener(handle_event, personalized_greeting=personalized)
+    tasks = []
+    if trigger_mode in ('doorbell', 'hybrid'):
+        tasks.append(doorbell_event_listener(handle_event, sensor=doorbell_sensor))
+    if trigger_mode in ('person', 'hybrid'):
+        tasks.append(frigate_event_listener(handle_event, personalized_greeting=personalized))
+
+    # one or both listeners run concurrently, feeding the same handle_event
+    await asyncio.gather(*tasks)
 
 
 def main():

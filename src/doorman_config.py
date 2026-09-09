@@ -40,7 +40,7 @@ DEFAULTS = {
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     # person = trigger on Frigate person detection (default); doorbell = trigger on
-    # the HA doorbell_pressed binary_sensor going on
+    # the HA doorbell_pressed binary_sensor going on; hybrid = trigger on either.
     'DOORMAN_TRIGGER_MODE': 'person',
     'DOORMAN_DOORBELL_SENSOR': 'binary_sensor.doorbell_pressed',
     'IDLE_TIMEOUT_S': 25.0,

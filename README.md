@@ -46,7 +46,7 @@ The compose file uses `network_mode: host` (Linux only). This is required becaus
 Key options (see `.env.example` for the full list):
 
 - `DOORMAN_PERSONALIZED_GREETING` - `true` waits for face recognition and greets by name (adds ~10-20s before first speech); `false` greets immediately on detection.
-- `DOORMAN_TRIGGER_MODE` - `person` (Frigate detection, default) or `doorbell` (HA `binary_sensor.doorbell_pressed`).
+- `DOORMAN_TRIGGER_MODE` - `person` (Frigate detection, default), `doorbell` (HA `binary_sensor.doorbell_pressed`), or `hybrid` (either).
 - `DOORMAN_DOORBELL_SENSOR` - HA entity watched in `doorbell` trigger mode.
 - `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.

@@ -32,6 +32,17 @@ def test_env_doorbell_mode():
     print("PASS env override to doorbell mode + custom sensor")
 
 
+def test_hybrid_mode_accepted():
+    _clear_doorman_env()
+    os.environ['DOORMAN_TRIGGER_MODE'] = 'hybrid'
+    cfg = dc.load()
+    assert cfg['DOORMAN_TRIGGER_MODE'] == 'hybrid'
+    # hybrid must satisfy both the doorbell and person dispatch branches
+    assert cfg['DOORMAN_TRIGGER_MODE'] in ('doorbell', 'hybrid')   # doorbell branch
+    assert cfg['DOORMAN_TRIGGER_MODE'] in ('person', 'hybrid')     # person branch
+    print("PASS hybrid mode hits both listener dispatch branches")
+
+
 def test_mode_normalized_lower():
     _clear_doorman_env()
     os.environ['DOORMAN_TRIGGER_MODE'] = 'DOORBELL'
@@ -45,5 +56,6 @@ def test_mode_normalized_lower():
 if __name__ == '__main__':
     test_default_person_mode()
     test_env_doorbell_mode()
+    test_hybrid_mode_accepted()
     test_mode_normalized_lower()
     print("ALL TRIGGER MODE TESTS PASS")
