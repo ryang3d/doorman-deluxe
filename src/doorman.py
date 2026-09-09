@@ -192,9 +192,40 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         except asyncio.TimeoutError:
             log.info("interaction duration elapsed")
         log.info("ending interaction")
-        recv_task.cancel(); mic_task.cancel(); keep_task.cancel()
+        # Graceful teardown of the talkback WebRTC connection. Abrupt close of the
+        # go2rtc consumer crashes the AD410's two-way backchannel (observed: crash on
+        # session end after a working conversation). Order matters:
+        #   1. stop producing audio (recv + mic tasks)
+        #   2. let the last queued AI audio flush to the speaker
+        #   3. close the peer connection (sends RTCP BYE) while the signaling WS is
+        #      still being read so go2rtc processes the close
+        #   4. settle briefly so the camera releases the backchannel
+        #   5. then shut the signaling WS down
+        recv_task.cancel(); mic_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
+        except Exception:
+            pass
+        # let queued AI audio flush to the speaker so we don't cut off mid-word
+        try:
+            end = asyncio.get_event_loop().time() + 0.3
+            while asyncio.get_event_loop().time() < end:
+                await asyncio.sleep(0.02)
+        except Exception:
+            pass
+        # close the peer connection (graceful RTCP BYE) while WS still being read
         try:
             await pc.close()
+        except Exception:
+            pass
+        # brief pause so go2rtc/camera releases the backchannel cleanly
+        try:
+            await asyncio.sleep(0.8)
+        except Exception:
+            pass
+        keep_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
         except Exception:
             pass
         try:
