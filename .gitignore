@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 frigate.env
+.env
 
 # test output artifacts
 out.raw

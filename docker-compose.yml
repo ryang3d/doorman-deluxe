@@ -1,0 +1,19 @@
+services:
+  doorman:
+    image: doorman:local
+    build: .
+    container_name: doorman
+    # host networking: aiortc/WebRTC talks UDP to go2rtc (Frigate :8555) and the
+    # doorbell RTSP (:554); bridge networking breaks media. Requires Linux.
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - doorman_snapshots:/snapshots
+    environment:
+      # must match the mounted volume path
+      DOORMAN_SNAPSHOT_DIR: /snapshots
+
+volumes:
+  doorman_snapshots:
