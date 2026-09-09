@@ -144,15 +144,59 @@ async def snapshot_front_door(cfg=None):
         return False, 'snapshot error: %s' % e
 
 
+def _latest_snapshot():
+    """Return the path of the most recently saved snapshot in SNAPSHOT_DIR, or None."""
+    try:
+        files = [os.path.join(SNAPSHOT_DIR, f) for f in os.listdir(SNAPSHOT_DIR)
+                 if f.startswith('front_door_') and f.endswith('.jpg')]
+        if not files:
+            return None
+        return max(files, key=os.path.getmtime)
+    except Exception:
+        return None
+
+
+async def _publish_snapshot_to_ha(cfg, local_path):
+    """Copy a snapshot jpg to HA's www/doorbell dir and return its HTTP URL (or None).
+
+    HA serves /local/<path> from /config/www. The phone notification can fetch this URL.
+    Returns the URL like http://<ha-host>:8123/local/doorbell/<file>.jpg or None on failure.
+    """
+    try:
+        import asyncio as _aio
+        fname = os.path.basename(local_path)
+        # scp over the HA SSH key
+        ssh_key = '~/.hermes/profiles/home-admin/home/.ssh/id_ed25519_hass'
+        cmd = ['scp', '-i', ssh_key, '-P', '2222', '-o', 'StrictHostKeyChecking=no',
+               '-o', 'UserKnownHostsFile=/dev/null',
+               local_path, 'root@<ha-host>:/config/www/doorbell/' + fname]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await proc.wait()
+        if proc.returncode != 0:
+            log.warning("publish snapshot scp failed rc=%s", proc.returncode)
+            return None
+        hass = cfg.get('hass_url', '').rstrip('/')
+        return f"{hass}/local/doorbell/{fname}"
+    except Exception as e:
+        log.warning("publish snapshot error: %s", e)
+        return None
+
+
 async def notify_ryan(message, cfg=None, image_path=None):
-    """Send a push notification to Ryan's devices via HA notify.all_devices."""
+    """Send a push notification to Ryan's devices via HA notify.all_devices.
+    If image_path given (or a recent snapshot exists), publish it to HA www and send
+    the HTTP URL so the phone shows the image."""
     cfg = cfg or _creds()
     payload = {'message': message, 'title': 'Doorman'}
-    if image_path and os.path.exists(image_path):
-        # Attach image via notify data (mobile_app supports image via data.image or the
-        # message may carry the path on HA-local). Simplest robust: include the absolute
-        # path in data so a companion can attach it; mobile_app needs the file served.
-        payload['data'] = {'image': image_path}
+    img = image_path or _latest_snapshot()
+    if img and os.path.exists(img):
+        url = await _publish_snapshot_to_ha(cfg, img)
+        if url:
+            # mobile_app attachments: data.image = URL; also data.url opens it
+            payload['data'] = {'image': url}
+            # Some setups use data.attachment / data.image; url makes it tappable
+            log.info("notification image url: %s", url)
     status, body = await _ha_request(cfg, 'POST', '/api/services/notify/all_devices', payload)
     if status in (200, 201):
         log.info("notified Ryan: %s", message[:60])
