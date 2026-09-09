@@ -31,6 +31,7 @@ FRIGATE_TOPIC = 'frigate/events'
 FRONT_CAMERA = 'front_doorbell'      # Frigate camera name for the doorbell
 INTERACTION_MAX_S = 120               # hard cap on one door interaction
 INTERACTION_COOLDOWN_S = 20           # min seconds between interactions
+IDLE_TIMEOUT_S = 25                   # end interaction after this many idle seconds (no visitor/AI speech)
 
 
 def load_mqtt_creds():
@@ -47,9 +48,11 @@ def load_mqtt_creds():
 
 
 # ---------------------------------------------------------------- extended receive loop w/ tools
-async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, system_tools=True):
+async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, activity=None):
     """Like audio_bridge.gemini_receive_loop but ALSO handles tool_call responses:
-    when the model requests snapshot_front_door / notify_ryan, execute and reply."""
+    when the model requests snapshot_front_door / notify_ryan, execute and reply.
+    If `activity` (ActivityClock) is given, it is marked on visitor/AI/tool activity
+    so an idle watchdog can end the interaction when the visitor goes silent."""
     from google.genai import types
     try:
         while not stop_ev.is_set():
@@ -57,9 +60,20 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, syste
                 async for response in session.receive():
                     sc = getattr(response, 'server_content', None)
                     if sc:
+                        # visitor speech heard (resets idle)
+                        it_ = getattr(sc, 'input_transcription', None)
+                        if it_ and getattr(it_, 'text', None):
+                            log.info("[visitor said] %s", it_.text)
+                            if activity:
+                                await activity.mark()
+                        iit_ = getattr(sc, 'interim_input_transcription', None)
+                        if iit_ and getattr(iit_, 'text', None) and activity:
+                            await activity.mark()
                         ot = getattr(sc, 'output_transcription', None)
                         if ot and ot.text:
                             log.info("[gemini said] %s", ot.text)
+                            if activity:
+                                await activity.mark()
                         mt = getattr(sc, 'model_turn', None)
                         if mt:
                             for part in (mt.parts or []):
@@ -67,6 +81,8 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, syste
                                     data = part.inline_data.data
                                     audio_out_q.put_nowait(bytes(data))
                                     await speaking.mark_active()
+                                    if activity:
+                                        await activity.mark()
                         if getattr(sc, 'turn_complete', False):
                             log.info("turn complete")
                             await speaking.mark_idle()
@@ -76,6 +92,8 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, syste
                         fns = []
                         for fc in tc.function_calls:
                             log.info("[tool call] %s", fc.name)
+                            if activity:
+                                await activity.mark()
                             fns.append(fc)
                         if fns:
                             from google.genai import types as _t
@@ -99,9 +117,35 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, syste
 
 
 # ---------------------------------------------------------------- one interaction
-async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MAX_S):
+class ActivityClock:
+    """Tracks the last time there was meaningful activity (visitor speech, AI speech,
+    or a tool call) so the interaction can end after an idle period. Used to stop
+    listening / wrap up when the visitor goes silent."""
+    def __init__(self):
+        import time
+        self._last = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def mark(self):
+        import time
+        async with self._lock:
+            self._last = time.monotonic()
+
+    async def idle_seconds(self):
+        import time
+        async with self._lock:
+            return time.monotonic() - self._last
+
+
+async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MAX_S,
+                          idle_timeout_s=None):
     """Run one full door voice interaction (same proven pipeline as audio_bridge.run_once,
-    but with persona + tools). Returns exit code."""
+    but with persona + tools). Returns exit code.
+
+    idle_timeout_s: if set, end the interaction after this many seconds with no visitor
+    speech / AI speech / tool activity (defaults to INTERACTION_MAX_S, i.e. no early cut).
+    """
+    activity = ActivityClock()  # marks visitor/AI/tool activity; idle watchdog reads it
     cfg = ab.load_config()
     audio_q = asyncio.Queue()
     stop_ev = asyncio.Event()
@@ -123,17 +167,32 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
 
         speaking = ab.SpeakingState()
         recv_task = asyncio.create_task(
-            receive_loop_with_tools(session, audio_q, stop_ev, speaking))
+            receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
         mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
-        log.info("interaction starting (max %ss): %s", duration_s, trigger_text)
+        log.info("interaction starting (max %ss%s): %s", duration_s,
+                 f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)
         try:
             await asyncio.sleep(1.0)
             await session.send_realtime_input(text=trigger_text)
         except Exception as e:
             log.warning("prime err: %s", e)
 
+        # Watch for either the hard cap or (if configured) an idle period with no activity.
+        import time
+        interaction_start = time.monotonic()
         try:
-            await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+            if idle_timeout_s:
+                while not stop_ev.is_set():
+                    idle = await activity.idle_seconds()
+                    if idle >= idle_timeout_s:
+                        log.info("idle for %.0fs >= %ss, ending interaction", idle, idle_timeout_s)
+                        break
+                    if (time.monotonic() - interaction_start) >= duration_s:
+                        log.info("interaction duration elapsed")
+                        break
+                    await asyncio.sleep(0.5)
+            else:
+                await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
         except asyncio.TimeoutError:
             log.info("interaction duration elapsed")
         log.info("ending interaction")
@@ -269,16 +328,19 @@ async def amain(args):
         prompt = doorman_prompt.build_doorman_prompt(
             recognized_name=getattr(args, 'recognized', None))
         trigger = args.trigger_text or doorman_prompt.interaction_trigger_text()
-        return await run_interaction(prompt, trigger, duration_s=args.once)
+        return await run_interaction(prompt, trigger, duration_s=args.once,
+                                     idle_timeout_s=IDLE_TIMEOUT_S)
 
     # Full service: listen for door events.
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
-        # launch interaction; serialize so we don't overlap
+        # launch interaction; serialize so we don't overlap. End early if the visitor
+        # goes silent (idle) so Doorman stops listening and can re-trigger later.
         try:
             await asyncio.wait_for(
-                run_interaction(prompt, trigger_text, duration_s=INTERACTION_MAX_S),
+                run_interaction(prompt, trigger_text, duration_s=INTERACTION_MAX_S,
+                                idle_timeout_s=IDLE_TIMEOUT_S),
                 timeout=INTERACTION_MAX_S + 15)
         except asyncio.TimeoutError:
             log.warning("interaction overran cap")
