@@ -457,8 +457,11 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
 
     rcfg = RTCConfiguration(iceServers=[])  # critical: no STUN (unreachable -> 0 candidates)
     pc = RTCPeerConnection(rcfg)
-    # consumer: recvonly video + audio, plus sendonly mic (Gemini audio)
-    pc.addTransceiver('video', direction='recvonly')
+    # consumer: recvonly AUDIO only + sendonly mic (Gemini audio). NO video
+    # transceiver: receiving+decoding the twoway H264 stream correlates with AD410
+    # crashes (H264Decoder "Invalid data" floods during interactions). The backchannel
+    # only needs audio both ways; video is watched via Frigate's normal streams, never
+    # inside the talk connection (mirrors amcrest-intercom's separate video card).
     pc.addTransceiver('audio', direction='recvonly')
     mic = GeminiAudioTrack(audio_q)
     pc.addTrack(mic)
