@@ -8,3 +8,6 @@ out.raw
 out.wav
 *.raw
 /tmp/
+
+# door snapshots (test artifacts)
+snapshots/
