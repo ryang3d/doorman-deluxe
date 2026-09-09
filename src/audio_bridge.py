@@ -49,6 +49,19 @@ def load_config():
 CAM_MIC_RTSP = "rtsp://admin:<doorbell-pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1"
 
 # ---------------------------------------------------------------- Gemini Live session
+def voice_speech_config(cfg):
+    """Return a `speech_config` dict (or {}) for the configured prebuilt voice.
+
+    Reads DOORMAN_VOICE from config; empty/unset => {} so Gemini keeps its default
+    voice (preserves pre-voice behavior). Shape matches google-genai Live schema:
+    speech_config.voice_config.prebuilt_voice_config.voice_name.
+    """
+    name = (cfg.get('DOORMAN_VOICE') or '').strip()
+    if not name:
+        return {}
+    return {'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': name}}}}
+
+
 def gemini_connect_cm(system_prompt: str):
     """Return the async-context-manager for a Gemini Live session (caller does `async with`).
     Exposes client+session inside the context."""
@@ -62,10 +75,11 @@ def gemini_connect_cm(system_prompt: str):
     connect_cfg = {
         "response_modalities": ["AUDIO"],
     }
+    connect_cfg.update(voice_speech_config(cfg))
     if system_prompt:
         connect_cfg["system_instruction"] = {"parts": [{"text": system_prompt}]}
     cm = client.aio.live.connect(model=model, config=connect_cfg)
-    log.info("Gemini Live connect CM ready (%s)", model)
+    log.info("Gemini Live connect CM ready (%s) voice=%s", model, cfg.get('DOORMAN_VOICE'))
     return cm
 
 

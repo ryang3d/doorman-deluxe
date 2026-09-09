@@ -152,6 +152,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     cfg_tools = {'response_modalities': ['AUDIO'],
                  'system_instruction': {'parts': [{'text': system_prompt}]},
                  'tools': [{'function_declarations': doorman_tools.tool_declarations()}]}
+    cfg_tools.update(ab.voice_speech_config(cfg))
 
     from google import genai
     client = genai.Client(api_key=cfg['GEMINI_API_KEY'])
