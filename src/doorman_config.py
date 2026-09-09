@@ -44,8 +44,6 @@ DEFAULTS = {
     'INTERACTION_COOLDOWN_S': 20.0,
     # snapshots
     'DOORMAN_SNAPSHOT_DIR': '~/doorman/snapshots',
-    'DOORMAN_SNAPSHOT_HTTP_PORT': 8120,
-    'DOORMAN_SNAPSHOT_HTTP_ADVERTISE_HOST': '<doorman-host>',
     # legacy file paths (only used as fallback sources, not needed in docker)
     'PROFILE_ENV': PROFILE_ENV,
     'FRIGATE_ENV': FRIGATE_ENV,
@@ -102,11 +100,10 @@ def load():
                 break
 
     # normalise numerics / booleans
-    for numk in ('MQTT_PORT', 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S', 'INTERACTION_COOLDOWN_S',
-                 'DOORMAN_SNAPSHOT_HTTP_PORT'):
+    for numk in ('MQTT_PORT', 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S', 'INTERACTION_COOLDOWN_S'):
         try:
             merged[numk] = float(merged[numk]) if numk != 'MQTT_PORT' else int(float(merged[numk]))
-            if numk in ('MQTT_PORT', 'DOORMAN_SNAPSHOT_HTTP_PORT'):
+            if numk == 'MQTT_PORT':
                 merged[numk] = int(merged[numk])
         except (TypeError, ValueError):
             pass

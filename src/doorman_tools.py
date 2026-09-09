@@ -148,47 +148,41 @@ def _latest_snapshot():
         return None
 
 
-async def _publish_snapshot_to_ha(cfg, local_path):
-    """Copy a snapshot jpg to HA's www/doorbell dir and return its HTTP URL (or None).
+# ---------------------------------------------------------------- HA-native snapshot for notifications
+async def _ha_snapshot_url(cfg):
+    """Capture a frame of the doorbell via HA camera.snapshot and return its /local URL.
 
-    HA serves /local/<path> from /config/www. The phone notification can fetch this URL.
-    Returns the URL like http://<ha-host>:8123/local/doorbell/<file>.jpg or None on failure.
+    HA writes the jpg to /config/www/doorbell/ (served at /local/doorbell/) and we
+    return that URL for the notification image. No container HTTP server, no SSH,
+    no advertise-host config: HA captures + serves it regardless of where Doorman runs.
+    Returns the URL like http://<ha>/local/doorbell/<file>.jpg or None on failure.
     """
-    try:
-        import asyncio as _aio
-        fname = os.path.basename(local_path)
-        # scp over the HA SSH key
-        ssh_key = '~/.hermes/profiles/home-admin/home/.ssh/id_ed25519_hass'
-        cmd = ['scp', '-i', ssh_key, '-P', '2222', '-o', 'StrictHostKeyChecking=no',
-               '-o', 'UserKnownHostsFile=/dev/null',
-               local_path, 'root@<ha-host>:/config/www/doorbell/' + fname]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await proc.wait()
-        if proc.returncode != 0:
-            log.warning("publish snapshot scp failed rc=%s", proc.returncode)
-            return None
-        hass = cfg.get('hass_url', '').rstrip('/')
-        return f"{hass}/local/doorbell/{fname}"
-    except Exception as e:
-        log.warning("publish snapshot error: %s", e)
+    fname = 'front_door_%s.jpg' % time.strftime('%Y%m%d_%H%M%S')
+    ha_path = '/config/www/doorbell/' + fname
+    status, body = await _ha_request(
+        cfg, 'POST', '/api/services/camera/snapshot',
+        {'entity_id': 'camera.front_doorbell', 'filename': ha_path})
+    if status not in (200, 201):
+        log.warning("camera.snapshot failed: status %s body %s", status, body[:200])
         return None
+    hass = (cfg.get('hass_url') or '').rstrip('/')
+    url = f"{hass}/local/doorbell/{fname}"
+    log.info("HA snapshot saved to %s -> %s", ha_path, url)
+    return url
 
 
 async def notify_ryan(message, cfg=None, image_path=None):
     """Send a push notification to Ryan's devices via HA notify.all_devices.
-    If image_path given (or a recent snapshot exists), publish it to HA www and send
-    the HTTP URL so the phone shows the image."""
+    Attaches a doorbell frame captured by HA camera.snapshot (served at HA /local),
+    so the phone shows the image. image_path is accepted for backward compatibility
+    but HA captures its own frame, so a fresh doorbell frame is always attached."""
     cfg = cfg or _creds()
     payload = {'message': message, 'title': 'Doorman'}
-    img = image_path or _latest_snapshot()
-    if img and os.path.exists(img):
-        url = await _publish_snapshot_to_ha(cfg, img)
-        if url:
-            # mobile_app attachments: data.image = URL; also data.url opens it
-            payload['data'] = {'image': url}
-            # Some setups use data.attachment / data.image; url makes it tappable
-            log.info("notification image url: %s", url)
+    url = await _ha_snapshot_url(cfg)
+    if url:
+        # mobile_app attachments: data.image = URL
+        payload['data'] = {'image': url}
+        log.info("notification image url: %s", url)
     status, body = await _ha_request(cfg, 'POST', '/api/services/notify/all_devices', payload)
     if status in (200, 201):
         log.info("notified Ryan: %s", message[:60])

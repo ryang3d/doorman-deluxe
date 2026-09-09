@@ -24,8 +24,7 @@ def test_defaults_when_unset():
     # these are only in DEFAULTS (not in any profile file), so they prove the
     # hardcoded default is used when nothing overrides it
     assert cfg['INTERACTION_COOLDOWN_S'] == 20.0, cfg['INTERACTION_COOLDOWN_S']
-    assert cfg['DOORMAN_SNAPSHOT_HTTP_PORT'] == 8120, cfg['DOORMAN_SNAPSHOT_HTTP_PORT']
-    assert cfg['DOORMAN_SNAPSHOT_HTTP_ADVERTISE_HOST'] == '<doorman-host>'
+    assert cfg['DOORMAN_SNAPSHOT_DIR'].endswith('snapshots')
     print("PASS defaults fallback")
 
 
@@ -34,12 +33,12 @@ def test_env_override():
     os.environ['DOORMAN_MQTT_HOST'] = '10.0.0.5'
     os.environ['DOORMAN_MQTT_PORT'] = '1884'
     os.environ['DOORMAN_PERSONALIZED_GREETING'] = 'false'
-    os.environ['DOORMAN_SNAPSHOT_HTTP_PORT'] = '9999'
+    os.environ['DOORMAN_SNAPSHOT_DIR'] = '/tmp/doorman-snaps'
     cfg = dc.load()
     assert cfg['MQTT_HOST'] == '10.0.0.5', cfg['MQTT_HOST']
     assert cfg['MQTT_PORT'] == 1884 and isinstance(cfg['MQTT_PORT'], int)
     assert cfg['DOORMAN_PERSONALIZED_GREETING'] is False
-    assert cfg['DOORMAN_SNAPSHOT_HTTP_PORT'] == 9999 and isinstance(cfg['DOORMAN_SNAPSHOT_HTTP_PORT'], int)
+    assert cfg['DOORMAN_SNAPSHOT_DIR'] == '/tmp/doorman-snaps'
     print("PASS env override")
 
 
