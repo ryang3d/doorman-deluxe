@@ -34,19 +34,17 @@ from aiortc.mediastreams import AudioStreamTrack
 log = logging.getLogger("bridge")
 
 # ---------------------------------------------------------------- config
-CONFIG_ENV = '~/.hermes/profiles/home-admin/frigate.env'
+import doorman_config as _dc
 
 def load_config():
-    d = {}
-    for line in open(CONFIG_ENV):
-        line = line.strip()
-        if '=' in line and not line.startswith('#'):
-            k, v = line.split('=', 1)
-            d[k] = v.strip().strip('"').strip("'")
-    return d
+    """Return the merged config dict (env > profile files > defaults)."""
+    return _dc.load()
 
-# Camera mic RTSP (verified capture path, Task 0.2). Creds match go2rtc stream.
-CAM_MIC_RTSP = "rtsp://admin:<doorbell-pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1"
+
+def _cam_mic_rtsp(cfg=None):
+    """Doorbell mic RTSP from config (defaults to the verified AD410 capture path)."""
+    cfg = cfg or load_config()
+    return cfg['CAM_MIC_RTSP']
 
 # ---------------------------------------------------------------- Gemini Live session
 def voice_speech_config(cfg):
@@ -160,20 +158,21 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
 
 
 # ---------------------------------------------------------------- mic capture -> Gemini
-async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200):
+async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None):
     """ffmpeg reads AD410 mic (RTSP) as raw pcm16 16k mono; forward chunks to Gemini.
     Half-duplex: while the AI is speaking (echo gate), the mic feed to Gemini is muted
     (we keep reading from ffmpeg so it doesn't backpressure, but drop the chunks).
     sample_bytes = 0.1s of 16k mono 16-bit = 3200 bytes."""
     import threading
+    rtsp = rtsp or _cam_mic_rtsp()
     cmd = [
         'ffmpeg', '-hide_banner', '-loglevel', 'error',
         '-rtsp_transport', 'tcp',
-        '-i', CAM_MIC_RTSP,
+        '-i', rtsp,
         '-f', 's16le', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
         'pipe:1',
     ]
-    log.info("starting mic capture: %s", CAM_MIC_RTSP.split('@')[1])
+    log.info("starting mic capture: %s", rtsp.split('@')[1])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Drain stderr so ffmpeg doesn't block
     def drain_err():

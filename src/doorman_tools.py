@@ -9,31 +9,26 @@ run_tool_call(name, args). All HTTP calls are async via aiohttp.
 """
 import asyncio, json, os, time, logging, base64
 
+import doorman_config as _dc
+
 log = logging.getLogger("doorman.tools")
 
-# Config file with HA + Frigate creds (reuse the existing one; it has FRIGATE_*; HASS_* is in .env)
-HASS_ENV = '~/.hermes/profiles/home-admin/.env'
-FRIGATE_ENV = '~/.hermes/profiles/home-admin/frigate.env'
-
-# Where snapshots are saved (web-served so notify can attach it). Keep under project.
-SNAPSHOT_DIR = '~/doorman/snapshots'
-
-
-def _getenv(path, key):
-    for line in open(path):
-        line = line.strip()
-        if line.startswith(key + '='):
-            return line.split('=', 1)[1].strip().strip('"').strip("'")
-    return None
-
+# All config comes from doorman_config (env > profile files > defaults).
+def _cfg():
+    return _dc.load()
 
 def _creds():
     """Return dict with hass creds + frigate_url (snapshot endpoint needs no login)."""
+    c = _cfg()
     return {
-        'hass_url': _getenv(HASS_ENV, 'HASS_URL'),
-        'hass_token': _getenv(HASS_ENV, 'HASS_TOKEN'),
-        'frigate_url': _getenv(FRIGATE_ENV, 'FRIGATE_URL'),
+        'hass_url': c.get('HASS_URL'),
+        'hass_token': c.get('HASS_TOKEN'),
+        'frigate_url': c.get('FRIGATE_URL'),
     }
+
+def _snapshot_dir():
+    """Snapshot output dir from config, guaranteed non-None (falls back to project default)."""
+    return _cfg().get('DOORMAN_SNAPSHOT_DIR') or '~/doorman/snapshots'
 
 
 # ---------------------------------------------------------------- function declarations
@@ -110,10 +105,11 @@ async def _frigate_snapshot_bytes(cfg):
 
 
 async def snapshot_front_door(cfg=None):
-    """Grab a still of the front door camera, save to SNAPSHOT_DIR, return (ok, path_or_err)."""
+    """Grab a still of the front door camera, save to snapshot dir, return (ok, path_or_err)."""
     cfg = cfg or _creds()
+    sdir = _snapshot_dir()
     try:
-        os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+        os.makedirs(sdir, exist_ok=True)
         data = await _frigate_snapshot_bytes(cfg)
         source = 'frigate'
         if not data:
@@ -127,7 +123,7 @@ async def snapshot_front_door(cfg=None):
             else:
                 return False, 'snapshot failed: HA camera_proxy status %s' % status
         fname = 'front_door_%s.jpg' % time.strftime('%Y%m%d_%H%M%S')
-        path = os.path.join(SNAPSHOT_DIR, fname)
+        path = os.path.join(sdir, fname)
         if isinstance(data, str):
             data = data.encode('latin1')
         with open(path, 'wb') as f:
@@ -140,9 +136,10 @@ async def snapshot_front_door(cfg=None):
 
 
 def _latest_snapshot():
-    """Return the path of the most recently saved snapshot in SNAPSHOT_DIR, or None."""
+    """Return the path of the most recently saved snapshot in the snapshot dir, or None."""
+    sdir = _snapshot_dir()
     try:
-        files = [os.path.join(SNAPSHOT_DIR, f) for f in os.listdir(SNAPSHOT_DIR)
+        files = [os.path.join(sdir, f) for f in os.listdir(sdir)
                  if f.startswith('front_door_') and f.endswith('.jpg')]
         if not files:
             return None

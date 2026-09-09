@@ -24,27 +24,22 @@ import doorman_tools
 
 log = logging.getLogger("doorman")
 
-# Frigate MQTT config (from the profile .env / frigate.env)
-MQTT_HOST = '<ha-host>'
-MQTT_PORT = 1883
-FRIGATE_TOPIC = 'frigate/events'
-FRONT_CAMERA = 'front_doorbell'      # Frigate camera name for the doorbell
-INTERACTION_MAX_S = 120               # hard cap on one door interaction
-INTERACTION_COOLDOWN_S = 20           # min seconds between interactions
-IDLE_TIMEOUT_S = 25                   # end interaction after this many idle seconds (no visitor/AI speech)
+# Frigate MQTT config (from doorman_config: env > profile files > defaults)
+import doorman_config as _dc
+_CFG = _dc.load()
+MQTT_HOST = _CFG['MQTT_HOST']
+MQTT_PORT = _CFG['MQTT_PORT']
+FRIGATE_TOPIC = _CFG['FRIGATE_TOPIC']
+FRONT_CAMERA = _CFG['FRONT_CAMERA']      # Frigate camera name for the doorbell
+INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
+INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
+IDLE_TIMEOUT_S = _CFG['IDLE_TIMEOUT_S']                     # end interaction after this many idle seconds
 
 
 def load_mqtt_creds():
-    d = {}
-    env = '~/.hermes/profiles/home-admin/.env'
-    for line in open(env):
-        line = line.strip()
-        if '=' in line and not line.startswith('#'):
-            k, v = line.split('=', 1)
-            v = v.strip().strip('"').strip("'")
-            if k in ('MQTT_USER', 'MQTT_PASSWORD'):
-                d[k] = v
-    return d.get('MQTT_USER'), d.get('MQTT_PASSWORD')
+    """Return (MQTT_USER, MQTT_PASSWORD) from the merged config."""
+    cfg = _dc.load()
+    return cfg.get('MQTT_USER'), cfg.get('MQTT_PASSWORD')
 
 
 # ---------------------------------------------------------------- extended receive loop w/ tools
@@ -358,8 +353,7 @@ async def amain(args):
     # Full service: listen for door events.
     # Personalized greeting config: false -> greet immediately (no recognition wait).
     cfg = ab.load_config()
-    personalized = cfg.get('DOORMAN_PERSONALIZED_GREETING', 'true').strip().lower() in (
-        'true', '1', 'yes', 'on')
+    personalized = bool(cfg.get('DOORMAN_PERSONALIZED_GREETING', True))
     log.info("personalized greeting enabled: %s", personalized)
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
