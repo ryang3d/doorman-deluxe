@@ -14,7 +14,7 @@ This combines two independently-verified pieces:
   - Gemini Live native-audio round-trip (Task 1.3, model gemini-3.1-flash-live-preview)
 
 Config read from ~/.hermes/profiles/home-admin/frigate.env:
-  FRIGATE_URL, FRIGATE_USER, FRIGATE_PASSWORD, GEMINI_API_KEY
+  FRIGATE_URL (go2rtc base, no admin login needed), GEMINI_API_KEY
 Camera mic RTSP creds are in the doorbell go2rtc stream / hardcoded below (admin/<doorbell-pass>)
   - better: read from config, but keep in one place.
 

@@ -28,13 +28,11 @@ def _getenv(path, key):
 
 
 def _creds():
-    """Return dict with hass_url, hass_token, frigate_url, frigate_user, frigate_password."""
+    """Return dict with hass creds + frigate_url (snapshot endpoint needs no login)."""
     return {
         'hass_url': _getenv(HASS_ENV, 'HASS_URL'),
         'hass_token': _getenv(HASS_ENV, 'HASS_TOKEN'),
         'frigate_url': _getenv(FRIGATE_ENV, 'FRIGATE_URL'),
-        'frigate_user': _getenv(FRIGATE_ENV, 'FRIGATE_USER'),
-        'frigate_password': _getenv(FRIGATE_ENV, 'FRIGATE_PASSWORD'),
     }
 
 
@@ -98,16 +96,13 @@ async def _ha_request(cfg, method, path, data=None, raw=False):
 
 
 async def _frigate_snapshot_bytes(cfg):
-    """Pull a snapshot image of the front door camera from Frigate (authed), return bytes.
-    Falls back to HA camera snapshot if Frigate unavailable."""
+    """Pull a snapshot image of the front door camera from Frigate, return bytes.
+    No auth login needed - the snapshot endpoint is read-only and accessible without
+    a session (verified). Falls back to HA camera snapshot if Frigate unavailable."""
     import aiohttp
     frigate = cfg['frigate_url'].rstrip('/')
-    # login for cookie
+    # Frigate snapshot of the front_doorbell camera: latest detection image (no login)
     async with aiohttp.ClientSession() as s:
-        async with s.post(frigate + '/api/login',
-                          json={'user': cfg['frigate_user'], 'password': cfg['frigate_password']}) as r:
-            pass  # cookie jar holds frigate_token
-        # Frigate snapshot of the front_doorbell camera: latest detection image
         async with s.get(frigate + '/api/front_doorbell/latest.jpg', timeout=15) as r:
             if r.status == 200:
                 return await r.read()
