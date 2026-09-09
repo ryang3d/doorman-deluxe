@@ -39,6 +39,10 @@ DEFAULTS = {
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
+    # person = trigger on Frigate person detection (default); doorbell = trigger on
+    # the HA doorbell_pressed binary_sensor going on
+    'DOORMAN_TRIGGER_MODE': 'person',
+    'DOORMAN_DOORBELL_SENSOR': 'binary_sensor.doorbell_pressed',
     'IDLE_TIMEOUT_S': 25.0,
     'INTERACTION_MAX_S': 120.0,
     'INTERACTION_COOLDOWN_S': 20.0,
@@ -82,6 +86,8 @@ def load():
         'FRONT_CAMERA': 'FRONT_CAMERA', 'CAM_MIC_RTSP': 'CAM_MIC_RTSP',
         'GEMINI_API_KEY': 'GEMINI_API_KEY', 'DOORMAN_VOICE': 'DOORMAN_VOICE',
         'DOORMAN_PERSONALIZED_GREETING': 'DOORMAN_PERSONALIZED_GREETING',
+        'DOORMAN_TRIGGER_MODE': 'DOORMAN_TRIGGER_MODE',
+        'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
     }
