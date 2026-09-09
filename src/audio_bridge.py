@@ -22,7 +22,7 @@ Run:
   python src/audio_bridge.py            # run one interaction until Ctrl-C / timeout
   python src/audio_bridge.py --once 30  # run a fixed-duration session then exit
 """
-import argparse, asyncio, json, logging, math, array, subprocess, sys, os
+import argparse, asyncio, json, logging, math, array, subprocess, sys, os, hashlib
 from fractions import Fraction
 import websockets, aiohttp
 import av
@@ -158,55 +158,194 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
 
 
 # ---------------------------------------------------------------- mic capture -> Gemini
-async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None):
-    """ffmpeg reads AD410 mic (RTSP) as raw pcm16 16k mono; forward chunks to Gemini.
-    Half-duplex: while the AI is speaking (echo gate), the mic feed to Gemini is muted
-    (we keep reading from ffmpeg so it doesn't backpressure, but drop the chunks).
-    sample_bytes = 0.1s of 16k mono 16-bit = 3200 bytes."""
-    import threading
-    rtsp = rtsp or _cam_mic_rtsp()
-    cmd = [
-        'ffmpeg', '-hide_banner', '-loglevel', 'error',
-        '-rtsp_transport', 'tcp',
-        '-i', rtsp,
-        '-f', 's16le', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-        'pipe:1',
-    ]
-    log.info("starting mic capture: %s", rtsp.split('@')[1])
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    # Drain stderr so ffmpeg doesn't block
-    def drain_err():
-        for line in proc.stderr:
-            pass
-    threading.Thread(target=drain_err, daemon=True).start()
+# ---------------------------------------------------------------- HTTP digest auth (doorbell getAudio)
+# The AD410's native audio endpoint uses HTTP digest auth (fresh challenge per request).
+def _md5(s: str) -> str:
+    return hashlib.md5(s.encode()).hexdigest()
 
-    from google.genai import types
+
+def _parse_challenge(header: str) -> dict:
+    out = {}
+    if not header:
+        return out
+    header = header.split(" ", 1)[1] if " " in header else header
+    for item in header.split(","):
+        k, _, v = item.strip().partition("=")
+        out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def _digest_header(method: str, uri: str, ch: dict,
+                   user: str, password: str,
+                   nc="00000001", cnonce="24a8f3b0c1e5") -> str:
+    realm = ch.get("realm", "")
+    nonce = ch.get("nonce", "")
+    qop = ch.get("qop")
+    ha1 = _md5(f"{user}:{realm}:{password}")
+    ha2 = _md5(f"{method}:{uri}")
+    if qop:
+        qop = qop.split(",")[0].strip()
+        resp = _md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+    else:
+        resp = _md5(f"{ha1}:{nonce}:{ha2}")
+    h = (f'Digest username="{user}", realm="{realm}", nonce="{nonce}", '
+         f'uri="{uri}", response="{resp}"')
+    if ch.get("opaque"):
+        h += f', opaque="{ch["opaque"]}"'
+    if qop:
+        h += f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
+    return h
+
+
+GETAUDIO_PATH = "/cgi-bin/audio.cgi?action=getAudio&httptype=singlepart&channel=1"
+
+
+def _detect_audio_args(content_type: str, head: bytes) -> list:
+    """ffmpeg input args for the getAudio stream codec (AAC or G.711 A/u-law)."""
+    ct = (content_type or "").lower()
+    if "aac" in ct:
+        return ["-f", "aac"]
+    if "g.711u" in ct or "mulaw" in ct or "pcmu" in ct:
+        return ["-f", "mulaw", "-ar", "8000", "-ac", "1"]
+    if "g.711a" in ct or "alaw" in ct or "pcma" in ct:
+        return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
+    if len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xF0) == 0xF0:
+        return ["-f", "aac"]
+    log.warning("unknown getAudio codec (Content-Type=%r), defaulting to alaw", content_type)
+    return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
+
+
+async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None):
+    """Read the visitor mic via the AD410's native HTTP audio endpoint and forward
+    to Gemini as pcm16 16k mono. This replaces the old ffmpeg-RTSP pull.
+
+    Why HTTP and not RTSP: pulling the mic over a SECOND RTSP session while the
+    WebRTC talkback backchannel is open crashes the AD410 (concurrent sessions).
+    The camera's HTTP getAudio endpoint opens no RTSP session, so the mic can run
+    while we talk, exactly like the amcrest-intercom project does (proven on this
+    camera). Half-duplex echo gating is preserved: while the AI is speaking (or in
+    the tail), the feed to Gemini is muted but we keep draining so ffmpeg never
+    backpressures.
+    """
+    import threading
+    cfg = load_config()
+    host = cfg.get('DOORMAN_DOORBELL_HOST', '<camera-ip>')
+    user = cfg.get('DOORMAN_DOORBELL_USER', 'admin')
+    password = cfg.get('DOORMAN_DOORBELL_PASSWORD', '')
+    url = f"http://{host}{GETAUDIO_PATH}"
+    # route anything the old signature passed (tests) into the doorbell host
+    if rtsp:
+        log.info("mic_to_gemini: rtsp arg ignored (HTTP getAudio in use)")
+
+    async def _run_http_capture():
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=8)) as http:
+            # fetch a fresh challenge, then authed GET
+            async with http.get(url) as pre:
+                ch = _parse_challenge(pre.headers.get('WWW-Authenticate', '')) if pre.status == 401 else {}
+            headers = {}
+            if ch:
+                headers['Authorization'] = _digest_header('GET', GETAUDIO_PATH, ch, user=user, password=password)
+            proc = None
+            try:
+                async with http.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        log.warning("mic: getAudio HTTP %s", resp.status)
+                        return
+                    head = await resp.content.read(4)
+                    in_args = _detect_audio_args(resp.headers.get('Content-Type'), head)
+                    log.info("mic: getAudio open ct=%s -> ffmpeg %s",
+                             resp.headers.get('Content-Type'), ' '.join(in_args))
+                    proc = await asyncio.create_subprocess_exec(
+                        'ffmpeg', '-hide_banner', '-loglevel', 'error',
+                        *in_args, '-i', 'pipe:0',
+                        '-f', 's16le', '-ar', '16000', '-ac', '1', 'pipe:1',
+                        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE)
+                    proc.stdin.write(head)
+                    _fbits = []
+
+                    async def _stderr_drain():
+                        while True:
+                            try:
+                                e = await proc.stderr.read(64)
+                            except Exception:
+                                return
+                            if not e:
+                                return
+                            _fbits.append(e)
+
+                    _err_task = asyncio.create_task(_stderr_drain())
+
+                    async def http_to_ffmpeg():
+                        # Stream HTTP audio straight into ffmpeg stdin in chunks.
+                        # Keep stdin open (live stream). Verified: -fflags nobuffer
+                        # suppressed output on a live pipe; buffering to 16KB then
+                        # draining also interfered. Plain per-chunk writes + drain
+                        # produce continuous output on this camera.
+                        try:
+                            async for chunk in resp.content.iter_chunked(8192):
+                                if proc.stdin.is_closing():
+                                    break
+                                proc.stdin.write(chunk)
+                                await proc.stdin.drain()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            log.info("mic: http->ffmpeg ended: %s", e)
+                        finally:
+                            try:
+                                if not proc.stdin.is_closing():
+                                    proc.stdin.close()
+                            except Exception:
+                                pass
+
+                    from google.genai import types
+                    pump = asyncio.create_task(http_to_ffmpeg())
+                    acc = bytearray()
+                    try:
+                        while not stop_ev.is_set():
+                            data = await proc.stdout.read(sample_bytes)
+                            if not data:
+                                log.warning("mic: ffmpeg stdout closed")
+                                break
+                            # read(n) returns UP TO n bytes; ffmpeg emits 16k-s16 in
+                            # ~1600-byte pieces, so accumulate partial reads into
+                            # full 3200-byte (100 ms) chunks before sending to Gemini.
+                            acc += data
+                            while len(acc) >= sample_bytes:
+                                chunk = bytes(acc[:sample_bytes])
+                                del acc[:sample_bytes]
+                                if await speaking.muted():
+                                    continue
+                                try:
+                                    await session.send_realtime_input(
+                                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                                except Exception as e:
+                                    log.warning("mic send_realtime_input err: %s", e)
+                                    return
+                    finally:
+                        pump.cancel()
+                        _err_task.cancel()
+                        if _fbits:
+                            log.warning("mic: ffmpeg stderr: %s",
+                                        b"".join(_fbits).decode(errors="replace")[:300])
+            finally:
+                if proc is not None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
     try:
-        while not stop_ev.is_set():
-            # Read off the event loop: proc.stdout.read() blocks for seconds while the
-            # AD410 RTSP connects/stutters, freezing aiortc's RTP/ICE and the go2rtc WS
-            # keepalive task -> go2rtc drops the talkback consumer (consumers=0).
-            data = await asyncio.to_thread(proc.stdout.read, sample_bytes)
-            if not data:
-                log.warning("mic capture ended (ffmpeg closed)")
-                break
-            if len(data) == sample_bytes:
-                # Echo gate: if the AI is speaking (or within the tail), drop the mic chunk.
-                if await speaking.muted():
-                    continue
-                try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000"))
-                except Exception as e:
-                    log.warning("send_realtime_input err: %s", e)
-                    break
-            await asyncio.sleep(0)
+        await _run_http_capture()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.warning("mic capture error: %s", e)
     finally:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
         log.info("mic capture stopped")
+
 
 
 # ---------------------------------------------------------------- AI audio -> WebRTC talkback

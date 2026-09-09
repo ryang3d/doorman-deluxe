@@ -34,6 +34,12 @@ DEFAULTS = {
     # doorbell camera mic RTSP (visitor audio in)
     'CAM_MIC_RTSP': ('rtsp://admin:<doorbell-pass>@<camera-ip>:554/'
                      'cam/realmonitor?channel=1&subtype=1'),
+    # AD410 native HTTP audio (amcrest-intercom HEAR path). Reading the visitor mic
+    # over HTTP getAudio opens NO RTSP session, so the doorbell's backchannel/button
+    # stay stable even while we talk (the AD410 crashes under concurrent RTSP pulls).
+    'DOORMAN_DOORBELL_HOST': '<camera-ip>',
+    'DOORMAN_DOORBELL_USER': 'admin',
+    'DOORMAN_DOORBELL_PASSWORD': '',
     # Gemini Live
     'GEMINI_API_KEY': '',
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
@@ -90,6 +96,9 @@ def load():
         'DOORMAN_PERSONALIZED_GREETING': 'DOORMAN_PERSONALIZED_GREETING',
         'DOORMAN_TRIGGER_MODE': 'DOORMAN_TRIGGER_MODE',
         'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
+        'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
+        'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
+        'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
     }
