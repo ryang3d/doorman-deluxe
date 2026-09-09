@@ -1,0 +1,23 @@
+[Unit]
+Description=Doorman - AI agentic doorbell voice service (Frigate + Gemini Live)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Run the orchestrator (blocks: subscribes to Frigate MQTT, waits for door events).
+# WorkingDirectory must be the src dir so `import audio_bridge` resolves.
+WorkingDirectory=~/doorman/src
+ExecStart=~/doorman/.venv/bin/python ~/doorman/src/doorman.py
+# The code logs to stderr/stdout -> journald.
+StandardOutput=journal
+StandardError=journal
+# Restart on ANY exit (crash, SIGTERM, etc.) so Doorman is always available.
+# Restart=on-failure treats SIGTERM as a clean stop and won't recover; always does.
+Restart=always
+RestartSec=5
+# Let the interaction run; give plenty of time for shutdown on stop.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
