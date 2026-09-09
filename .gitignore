@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 frigate.env
+
+# test output artifacts
+out.raw
+out.wav
+*.raw
+/tmp/
