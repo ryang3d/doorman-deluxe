@@ -150,9 +150,30 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
 
 
 # ---------------------------------------------------------------- MQTT listener
+def _parse_sub_label(sub):
+    """Frigate sub_label can be None, a str name, or a list ['Name', confidence].
+    Return the clean name string or None."""
+    if not sub:
+        return None
+    if isinstance(sub, (list, tuple)):
+        name = sub[0] if sub else None
+        return name if isinstance(name, str) else None
+    return sub if isinstance(sub, str) else None
+
+
 async def frigate_event_listener(handle_event):
-    """Subscribe to frigate/events; call handle_event(event_dict) for relevant new events.
-    Yields relevant triggers. Blocks forever (or until cancelled)."""
+    """Subscribe to frigate/events; trigger Doorman when a person is at the door,
+    WAITING for face recognition before deciding whether to greet as known or unknown.
+
+    Frigate event lifecycle for a recognized person (verified 2026-09-08):
+      new    sub=None                (person first detected)
+      update sub=None                (still tracking)
+      update sub=['Ryan', 0.96]      (recognition result arrives, ~10-20s later)
+      update sub=['Ryan', 0.95]
+      end    sub=['Ryan', 0.95]
+    We trigger ONCE per event id once recognition settles: if a recognized sub_label
+    appears we greet by name; if the event ends / no recognition we greet as unknown.
+    """
     import paho.mqtt.client as mqtt
     loop = asyncio.get_event_loop()
     events = asyncio.Queue()
@@ -161,7 +182,6 @@ async def frigate_event_listener(handle_event):
     def on_message(client, userdata, msg):
         try:
             payload = json.loads(msg.payload.decode())
-            # forward a parsed relevant event; let the caller decide
             asyncio.run_coroutine_threadsafe(events.put(payload), loop)
         except Exception:
             pass
@@ -172,43 +192,74 @@ async def frigate_event_listener(handle_event):
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     client.subscribe(FRIGATE_TOPIC)
     log.info("subscribed to %s", FRIGATE_TOPIC)
-    # run mqtt in background thread
     import threading
     def run():
         client.loop_forever()
     threading.Thread(target=run, daemon=True).start()
 
-    last_trigger_ts = 0.0
     import time
+    # state: event_id -> {'new_ts': monotonic, 'recognized': name-or-None, 'triggered': bool}
+    pending = {}
+    RECOGNIZE_GRACE_S = 25.0   # how long to wait for recognition after 'new'
+    last_trigger_ts = 0.0
+
     while True:
         ev = await events.get()
-        # parse
         after = ev.get('after', {})
         camera = after.get('camera', '')
         label = after.get('label', '')
         etype = ev.get('type', '')
+        event_id = after.get('id', '')
         if camera != FRONT_CAMERA:
-            continue
-        # relevant: person/cat/dog/face new event, or doorbell-specific
-        # We trigger on 'new' events for people-ish labels, plus sub_label for faces
-        if etype != 'new':
             continue
         if label not in ('person', 'cat', 'dog', 'face'):
             continue
-        sub_label = after.get('sub_label')
-        # debounce + not already interacting handled by caller
         now = time.monotonic()
-        if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
-            log.info("event debounced (cooldown)")
-            continue
-        last_trigger_ts = now
-        # Build trigger context
-        recognized = sub_label if sub_label else None
-        doorbell_pressed = False  # Frigate doesn't know the physical ring; see note
-        trigger_text = doorman_prompt.interaction_trigger_text(
-            recognized_name=recognized, doorbell_pressed=doorbell_pressed, label=label)
-        prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
-        await handle_event(prompt, trigger_text, {'label': label, 'sub_label': sub_label})
+        name = _parse_sub_label(after.get('sub_label'))
+
+        if etype == 'new':
+            # start a pending track for this visitor
+            if event_id and event_id not in pending:
+                pending[event_id] = {'new_ts': now, 'name': name}
+                log.info("person seen (event %s), waiting for recognition...", event_id[:12])
+        elif etype == 'update':
+            if event_id in pending:
+                # recognition arrived?
+                if name:
+                    pending[event_id]['name'] = name
+                    log.info("recognized %s for event %s", name, event_id[:12])
+                # trigger once recognition is known (may be immediate or after several updates)
+        elif etype == 'end':
+            if event_id in pending:
+                if name and pending[event_id]['name'] is None:
+                    pending[event_id]['name'] = name
+                log.info("event %s ended (name=%s)", event_id[:12], pending[event_id]['name'])
+
+        # ---- trigger decision for a settled event (fire exactly once per event id) ----
+        if event_id in pending:
+            p = pending[event_id]
+            elapsed = now - p['new_ts']
+            settled = (p['name'] is not None) or (etype == 'end') or (elapsed >= RECOGNIZE_GRACE_S)
+            if settled and not p.get('triggered'):
+                p['triggered'] = True
+                # fire unless debounced by cooldown
+                if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
+                    log.info("trigger debounced (cooldown); recognized=%s", p['name'])
+                else:
+                    last_trigger_ts = now
+                    p['fired'] = True
+                    recognized = p['name']
+                    log.info("TRIGGER: %s at the door (recognized=%s)", label, recognized)
+                    trigger_text = doorman_prompt.interaction_trigger_text(
+                        recognized_name=recognized, doorbell_pressed=False, label=label)
+                    prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
+                    await handle_event(prompt, trigger_text, {'label': label, 'name': recognized})
+
+        # expire stale pending entries
+        expired = [eid for eid, p in pending.items()
+                   if p.get('triggered', False) and (now - p['new_ts']) > 60]
+        for eid in expired:
+            del pending[eid]
 
 
 # ---------------------------------------------------------------- main / CLI
