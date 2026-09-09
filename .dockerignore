@@ -1,0 +1,11 @@
+.venv
+.git
+snapshots
+__pycache__
+*.pyc
+out.raw
+out.wav
+tests
+.env
+frigate.env
+*.log
