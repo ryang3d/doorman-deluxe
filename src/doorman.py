@@ -186,7 +186,7 @@ async def frigate_event_listener(handle_event):
         except Exception:
             pass
 
-    client = mqtt.Client()
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(user, pw)
     client.on_message = on_message
     client.connect(MQTT_HOST, MQTT_PORT, 60)
