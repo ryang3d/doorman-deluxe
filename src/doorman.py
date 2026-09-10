@@ -178,14 +178,28 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         speaking = ab.SpeakingState()
         recv_task = asyncio.create_task(
             receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
-        # Primary mic source: the twoway connection's received-audio track (single-
-        # connection topology, matches the browser PWA - no second camera audio load).
-        # Fallback: RTSP sub relay, only if the camera offered no received-audio track.
-        if recv_holder.get('track') is not None:
+        # MIC SOURCE selection. Default is the go2rtc RELAY, not the twoway
+        # connection's received-audio track.
+        #
+        # History (2026-09-10): this used to prefer mic_from_webtrack whenever
+        # recv_holder had a track. go2rtc ALWAYS offers that track (sendonly
+        # PCMA/8000), so the webtrack path was always taken - and it was never
+        # observed to carry the visitor's voice. Three rings produced greeting-only
+        # conversations: Gemini transcribed nothing and every interaction sat out its
+        # 25s idle timeout. The track's presence silently shadowed the working relay
+        # path. The relay is therefore the default, and the webtrack is opt-in
+        # (DOORMAN_MIC_SOURCE=webtrack) for A/B testing.
+        mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
+        if mic_source == 'webtrack' and recv_holder.get('track') is not None:
+            log.info("mic source: webtrack (twoway received-audio track)")
             mic_task = asyncio.create_task(
                 ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
         else:
-            log.warning("mic: no received-audio track; falling back to RTSP sub relay")
+            if mic_source == 'webtrack':
+                log.warning("mic source: webtrack requested but no received-audio "
+                            "track offered; using relay instead")
+            log.info("mic source: relay %s",
+                     str(cfg.get('DOORMAN_MIC_RTSP') or '').split('@')[-1])
             mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
         log.info("interaction starting (max %ss%s): %s", duration_s,
                  f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)

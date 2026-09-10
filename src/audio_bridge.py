@@ -252,7 +252,7 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
                 'ffmpeg', '-hide_banner', '-loglevel', 'error',
                 '-rtsp_transport', 'tcp',
                 '-i', mic_rtsp,
-                '-map', '0:a:0', '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                '-vn', '-map', '0:a:0', '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
                 '-f', 's16le', 'pipe:1',
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             # Probe: confirm audio is actually flowing. go2rtc can spin up a cold
@@ -308,6 +308,8 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
 
     _err_task = asyncio.create_task(_stderr_drain())
     acc = bytearray()
+    _lvl_n = 0        # chunks counted in the current level-report window
+    _lvl_peak = 0     # peak |sample| seen in that window
     try:
         while not stop_ev.is_set():
             data = await proc.stdout.read(sample_bytes)
@@ -322,6 +324,25 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
                 del acc[:sample_bytes]
                 if await speaking.muted():
                     continue
+                # Signal visibility (added 2026-09-10): without this we cannot tell
+                # whether the visitor's voice is actually reaching us. Reference
+                # levels from prior probing: quiet ambient peaks ~100-400 int16,
+                # human speech at the door 10k-25k. ~2s of 100ms chunks per line.
+                try:
+                    import array as _arr
+                    _s = _arr.array('h')
+                    _s.frombytes(chunk)
+                    _pk = max(abs(x) for x in _s) if len(_s) else 0
+                except Exception:
+                    _pk = 0
+                _lvl_n += 1
+                if _pk > _lvl_peak:
+                    _lvl_peak = _pk
+                if _lvl_n >= 20:
+                    log.info("mic: relay level peak=%d/32767 over %.1fs", _lvl_peak,
+                             _lvl_n * 0.1)
+                    _lvl_n = 0
+                    _lvl_peak = 0
                 try:
                     await session.send_realtime_input(
                         audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))

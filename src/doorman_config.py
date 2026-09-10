@@ -40,12 +40,24 @@ DEFAULTS = {
     'DOORMAN_DOORBELL_HOST': '<camera-ip>',
     'DOORMAN_DOORBELL_USER': 'admin',
     'DOORMAN_DOORBELL_PASSWORD': '',
-    # Visitor mic source. go2rtc RTSP RELAY for the front_doorbell_sub stream
-    # (subtype=1): reuses go2rtc's already-open camera RTSP session instead of
-    # opening a second direct connection to the AD410 (the HTTP getAudio intercom
-    # did that, and it wedged the camera at teardown). Overridable; host:port is
-    # the go2rtc RTSP relay (Frigate's bundled go2rtc), not the HTTP API port.
-    'DOORMAN_MIC_RTSP': 'rtsp://<frigate-host>:8554/front_doorbell_sub',
+    # Visitor mic source: go2rtc RTSP RELAY, deliberately the MAIN restream
+    # (front_doorbell), NOT the sub (front_doorbell_sub).
+    #  - Measured 2026-09-10: the main relay carries live camera-mic audio
+    #    (pcm_alaw 8000 Hz, mean -70.5 dB, max -53.2 dB at rest).
+    #  - Frigate already holds the main camera session open for record+detect, so
+    #    go2rtc multiplexes this consumer with NO extra AD410 RTSP session. The sub
+    #    relay is unconsumed after the 2026-09-10 detect-input change, so reading it
+    #    would open a 3rd camera session (which wedges the AD410).
+    # host:port is the go2rtc RTSP relay (Frigate's bundled go2rtc), not the HTTP API.
+    'DOORMAN_MIC_RTSP': 'rtsp://<frigate-host>:8554/front_doorbell',
+    # Which visitor-mic implementation to use:
+    #   relay    (default) read DOORMAN_MIC_RTSP via ffmpeg. Proven to deliver audio.
+    #   webtrack consume the twoway WebRTC connection's received-audio track. go2rtc
+    #            always offers this track (sendonly PCMA), but it was NEVER observed
+    #            to carry the visitor's voice - and its mere presence silently
+    #            shadowed the relay path, so Gemini received nothing at all
+    #            (2026-09-10: three rings, greeting only, no visitor audio).
+    'DOORMAN_MIC_SOURCE': 'relay',
     # Gemini Live
     'GEMINI_API_KEY': '',
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
