@@ -310,6 +310,7 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
     acc = bytearray()
     _lvl_n = 0        # chunks counted in the current level-report window
     _lvl_peak = 0     # peak |sample| seen in that window
+    _lvl_muted = 0    # chunks gated by the echo gate in that window
     try:
         while not stop_ev.is_set():
             data = await proc.stdout.read(sample_bytes)
@@ -322,12 +323,15 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
             while len(acc) >= sample_bytes:
                 chunk = bytes(acc[:sample_bytes])
                 del acc[:sample_bytes]
-                if await speaking.muted():
-                    continue
-                # Signal visibility (added 2026-09-10): without this we cannot tell
-                # whether the visitor's voice is actually reaching us. Reference
-                # levels from prior probing: quiet ambient peaks ~100-400 int16,
-                # human speech at the door 10k-25k. ~2s of 100ms chunks per line.
+                muted = await speaking.muted()
+                # Signal visibility (added 2026-09-10). Computed BEFORE the echo-gate
+                # check on purpose: the old version `continue`d on mute, so during AI
+                # speech it emitted NO level lines and we could not distinguish "the
+                # camera stopped delivering audio" from "audio arrived but was gated".
+                # That ambiguity is exactly what made the last ring's failure window
+                # unreadable. We now log regardless, and report how many chunks were
+                # gated, so a MUTED-ONLY run is visibly different from silence.
+                # Reference levels: quiet ambient peaks ~100-400 int16, speech 10k-25k.
                 try:
                     import array as _arr
                     _s = _arr.array('h')
@@ -338,11 +342,16 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
                 _lvl_n += 1
                 if _pk > _lvl_peak:
                     _lvl_peak = _pk
+                if muted:
+                    _lvl_muted += 1
                 if _lvl_n >= 20:
-                    log.info("mic: relay level peak=%d/32767 over %.1fs", _lvl_peak,
-                             _lvl_n * 0.1)
+                    log.info("mic: relay level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
+                             _lvl_peak, _lvl_n * 0.1, _lvl_muted, _lvl_n)
                     _lvl_n = 0
                     _lvl_peak = 0
+                    _lvl_muted = 0
+                if muted:
+                    continue
                 try:
                     await session.send_realtime_input(
                         audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
@@ -540,6 +549,15 @@ class GeminiAudioTrack(AudioStreamTrack):
         self.recv_count = 0          # diagnostic
         self.nonzero_frames = 0      # diagnostic
         self._frame_start = None     # real-time pacing clock
+        # windowed speaker-output diagnostics (added 2026-09-10): we need to know
+        # EXACTLY when real (non-silent) audio is being driven to the doorbell
+        # speaker, because that is the surviving wedge suspect. The old code only
+        # logged the first 5 nonzero frames, then went quiet for the rest of the
+        # session, so we could not tell whether speech was still playing.
+        self._win_frames = 0
+        self._win_nonzero = 0
+        self._win_last = 0.0
+        self.speaker_seconds = 0.0   # cumulative seconds with real audio out
 
     async def _pace(self):
         """aiortc does NOT pace audio - it calls recv() in a tight loop. So we must
@@ -602,10 +620,29 @@ class GeminiAudioTrack(AudioStreamTrack):
             # pad with zeros (idle)
             out_bytes += b'\x00' * (target_bytes - len(out_bytes))
         self.recv_count += 1
-        if any(out_bytes):
+        nonzero = any(out_bytes)
+        if nonzero:
             self.nonzero_frames += 1
             if self.recv_count <= 5 or self.nonzero_frames <= 5:
                 log.info("[track] recv #%d has NONZERO audio (%d bytes nonzero)", self.recv_count, sum(1 for b in out_bytes if b))
+        # Windowed speaker-output summary every ~2s. This is the "is the AI actually
+        # driving the speaker right now" signal; correlate it against the mic level
+        # lines to test whether real audio-out wedges the camera.
+        import time as _t
+        now = _t.monotonic()
+        self._win_frames += 1
+        if nonzero:
+            self._win_nonzero += 1
+        if self._win_last == 0.0:
+            self._win_last = now
+        elif now - self._win_last >= 2.0:
+            win = now - self._win_last
+            self.speaker_seconds += self._win_nonzero * 0.02
+            log.info("[speaker] audio-out %d/%d frames nonzero over %.1fs (total speech %.1fs)",
+                     self._win_nonzero, self._win_frames, win, self.speaker_seconds)
+            self._win_last = now
+            self._win_frames = 0
+            self._win_nonzero = 0
         arr = np.frombuffer(out_bytes, dtype=np.int16).reshape(1, -1)
         fr = av.AudioFrame.from_ndarray(arr, format='s16', layout='mono')
         fr.sample_rate = self.sample_rate_out
