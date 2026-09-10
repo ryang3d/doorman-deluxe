@@ -156,7 +156,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
 
     async with cm as session:
         try:
-            pc, ws, mic, keep_task = await ab.talkback_connect(cfg, audio_q)
+            pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
         except Exception as e:
             log.error("talkback connect failed: %s", e)
             return 2
@@ -164,7 +164,15 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         speaking = ab.SpeakingState()
         recv_task = asyncio.create_task(
             receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
-        mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
+        # Primary mic source: the twoway connection's received-audio track (single-
+        # connection topology, matches the browser PWA - no second camera audio load).
+        # Fallback: RTSP sub relay, only if the camera offered no received-audio track.
+        if recv_holder.get('track') is not None:
+            mic_task = asyncio.create_task(
+                ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
+        else:
+            log.warning("mic: no received-audio track; falling back to RTSP sub relay")
+            mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
         log.info("interaction starting (max %ss%s): %s", duration_s,
                  f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)
         try:
@@ -475,6 +483,14 @@ async def amain(args):
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
+        # Camera health gate: after a two-way interaction the AD410 can wedge its
+        # RTSP server (~1-5 min, self-recovers). Wait for go2rtc to re-acquire the
+        # camera before opening the twoway backchannel, so we don't start into a
+        # still-wedged camera. Bounded (90s) so a ring is never dropped forever.
+        try:
+            await ab.wait_camera_healthy(max_wait_s=90, poll_s=5)
+        except Exception as e:
+            log.warning("camera health gate error: %s; proceeding", e)
         # launch interaction; serialize so we don't overlap. End early if the visitor
         # goes silent (idle) so Doorman stops listening and can re-trigger later.
         try:

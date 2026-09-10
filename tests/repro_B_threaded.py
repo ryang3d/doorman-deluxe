@@ -19,7 +19,7 @@ async def main():
         await s.post(base+'/api/login',json={'user':cfg['FRIGATE_USER'],'password':cfg['FRIGATE_PASSWORD']})
         tok=s.cookie_jar.filter_cookies(base).get('frigate_token'); cookie='frigate_token='+tok.value if tok else ''
         q=asyncio.Queue()
-        pc,ws,mic,keep=await asyncio.wait_for(ab.talkback_connect(cfg,q), timeout=25)
+        pc,ws,mic,keep,_recv=await asyncio.wait_for(ab.talkback_connect(cfg,q), timeout=25)
         await asyncio.sleep(1)
         log("connected, consumers:", await consumers(cfg,s,cookie))
 

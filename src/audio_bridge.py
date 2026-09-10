@@ -2,8 +2,11 @@
 """
 Doorman audio bridge (Phase 1.4): full-duplex doorbell <-> Gemini Live.
 
-Visitor voice IN:  ffmpeg reads AD410 RTSP mic audio -> raw PCM 16k mono -> Gemini Live
-                   (session.send_realtime_input audio=...)
+Visitor voice IN:  the twoway WebRTC connection's RECEIVED-audio track (the
+                   camera's mic, delivered by go2rtc over the same backchannel
+                   the AI audio goes out on) -> downmixed/16k -> Gemini Live.
+                   Single-connection topology, matching the browser PWA: the
+                   AD410 services one backchannel, so it does not wedge.
 AI voice OUT:      Gemini Live returns pcm16 24k audio -> resampled to 48k -> aiortc
                    sendonly mic track -> go2rtc front_doorbell_twoway (CONSUMER ?src=)
                    -> AD410 RTSP backchannel (PCMA) -> doorbell speaker.
@@ -341,6 +344,159 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
 
 
 # ---------------------------------------------------------------- AI audio -> WebRTC talkback
+# ---------------------------------------------------------------- mic via the received-audio track
+def _frame_to_mono16k(frame):
+    """Convert a received av.AudioFrame (any codec-PCM format/rate/channels) to
+    s16 16kHz mono bytes. Linear-interp resample (matches GeminiAudioTrack's
+    24k->48k approach; fine for speech).
+
+    aiortc decodes the camera's backchannel PCMA/8000 to mono s16 8k, so in
+    practice this is the 8k->16k path; the stereo handling is just robustness.
+    Handles both interleaved (to_ndarray shape (1, samples*nch)) and planar
+    (shape (nch, samples)) channel layouts."""
+    import numpy as np
+    nch = int(getattr(getattr(frame, 'layout', None), 'nb_channels', 1) or 1)
+    try:
+        ns = int(frame.samples)
+    except Exception:
+        ns = 0
+    arr = frame.to_ndarray()
+    if arr.dtype != np.int16:
+        if arr.dtype == np.float32:
+            arr = np.clip(arr * 32767.0, -32768, 32767).astype(np.int16)
+        else:
+            arr = arr.astype(np.int16)
+    if nch <= 1:
+        mono = arr.ravel()
+    elif arr.ndim == 2 and arr.shape[0] == nch and (ns == 0 or arr.shape[1] == ns):
+        # planar: (nch, ns)
+        mono = arr.mean(axis=0).astype(np.int16)
+    else:
+        # interleaved: (1, ns*nch) -> reshape to (nch, ns) then downmix
+        flat = arr.ravel()
+        if flat.size % nch == 0:
+            per = flat.size // nch
+            mono = flat.reshape(nch, per).mean(axis=0).astype(np.int16)
+        else:
+            mono = flat[:flat.size // nch * nch].reshape(nch, -1).mean(axis=0).astype(np.int16)
+    sr = int(frame.sample_rate)
+    if sr != 16000 and mono.size:
+        x_in = np.arange(mono.size, dtype=np.float64)
+        n_out = max(1, int(mono.size * 16000.0 / sr))
+        x_out = np.linspace(0.0, mono.size - 1, n_out)
+        mono = np.interp(x_out, x_in, mono.astype(np.float64)).astype(np.int16)
+    return mono.tobytes()
+
+
+async def mic_from_webtrack(session, recv_holder, stop_ev, speaking, wait_s=20):
+    """Feed the visitor's mic to Gemini from the twoway connection's RECEIVED-audio
+    track (go2rtc delivers the camera's backchannel mic there).
+
+    Why this instead of a separate RTSP/HTTP mic pull: the AD410 wedges (RTSP down
+    ~1-5 min) when it services a second audio path (sub-stream or HTTP intercom) at
+    the same time as the twoway backchannel. The browser PWA gets video+audio+mic
+    through ONE connection and never crashes; this mirrors that topology - the mic
+    and the AI audio share the single backchannel. Echo gating is preserved: while
+    the AI is speaking (or in the tail), received audio is dropped but frames keep
+    draining so the track never backpressures.
+
+    recv_holder: dict {'track': None} filled by talkback_connect's on('track')."""
+    import time
+    from google.genai import types
+
+    deadline = time.monotonic() + wait_s
+    while recv_holder.get('track') is None and not stop_ev.is_set():
+        if time.monotonic() >= deadline:
+            log.warning("mic: no received-audio track after %.0fs; mic disabled this interaction", wait_s)
+            return
+        await asyncio.sleep(0.2)
+    track = recv_holder['track']
+    log.info("mic: using twoway received-audio track (single-connection mic)")
+
+    acc = bytearray()
+    try:
+        while not stop_ev.is_set():
+            try:
+                frame = await asyncio.wait_for(track.recv(), timeout=5)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # track ended (teardown) - stop quietly
+                break
+            data = _frame_to_mono16k(frame)
+            if not data:
+                continue
+            acc += data
+            while len(acc) >= 3200:
+                chunk = bytes(acc[:3200])
+                del acc[:3200]
+                if await speaking.muted():
+                    continue
+                try:
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                except Exception as e:
+                    log.warning("mic send_realtime_input err: %s", e)
+                    return
+    except asyncio.CancelledError:
+        pass
+    finally:
+        log.info("mic capture stopped (webtrack)")
+
+
+# ---------------------------------------------------------------- camera health gate
+async def camera_healthy(stream='front_doorbell', timeout_s=10):
+    """True if go2rtc has a LIVE RTSP producer for `stream` (remote_addr set).
+
+    This is the health gate that decides whether the camera is actually serving
+    streams, not just whether its HTTP port answers. After a two-way interaction
+    the AD410 can wedge its RTSP server (~1-5 min, self-recovers); Prowl reports
+    'up' as soon as HTTP :80 returns but Frigate's ffmpeg may still be re-dialing.
+    A live producer with a remote_addr means go2rtc has re-acquired the camera.
+    Uses the go2rtc HTTP API (no auth needed for the read path)."""
+    try:
+        import aiohttp
+        cfg = load_config()
+        base = cfg['FRIGATE_URL'].rstrip('/')
+        url = f"{base}/api/go2rtc/api/streams"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
+            async with http.get(url) as resp:
+                if resp.status != 200:
+                    log.warning("camera health: go2rtc streams HTTP %s", resp.status)
+                    return False
+                data = await resp.json()
+        v = data.get(stream) or {}
+        for p in (v.get('producers') or []):
+            if isinstance(p, dict) and p.get('remote_addr'):
+                return True
+        return False
+    except Exception as e:
+        log.warning("camera health probe error: %s", e)
+        return False
+
+
+async def wait_camera_healthy(max_wait_s=90, poll_s=5, stream='front_doorbell'):
+    """Block until the camera's go2rtc source is live again (post-wedge recovery).
+    Called before starting a new interaction so Doorman does not open the twoway
+    backchannel into a still-wedged camera. Returns True if healthy (or on success
+    of the first probe), False if still unhealthy after max_wait_s (caller proceeds
+    anyway rather than dropping the ring)."""
+    import time
+    if await camera_healthy(stream):
+        return True
+    log.warning("camera health: %s not live; waiting for recovery (%.0fs budget)", stream, max_wait_s)
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        await asyncio.sleep(poll_s)
+        if await camera_healthy(stream):
+            log.info("camera health: %s recovered", stream)
+            return True
+    log.warning("camera health: %s still down after %.0fs; proceeding anyway", stream, max_wait_s)
+    return False
+
+
 class GeminiAudioTrack(AudioStreamTrack):
     """Sendonly track. Pulls pcm16 24k chunks from queue, upsamples to 48k for opus.
     recv() is NON-BLOCKING: it drains whatever 24k audio is queued, resamples it,
@@ -440,21 +596,35 @@ class GeminiAudioTrack(AudioStreamTrack):
 
 async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
     """Open WebRTC consumer connection to go2rtc carrying the Gemini audio track (sendonly).
-    Returns (pc, ws, mic, keepalive_task). The WebSocket MUST stay open for the session's
-    lifetime (it is go2rtc's signaling + connection keepalive); closing it tears down the
-    consumer. Caller closes pc/ws and cancels the task on shutdown."""
+    Returns (pc, ws, mic, keep_task, recv_holder). The WebSocket MUST stay open for the
+    session's lifetime (it is go2rtc's signaling + connection keepalive); closing it tears down
+    the consumer. Caller closes pc/ws and cancels the task on shutdown.
+
+    recv_holder is a dict {'track': None}; when go2rtc's answer includes a received-audio
+    m-line (the camera's backchannel mic, e.g. PCMA/8000), the on('track') handler stashes
+    that track so the mic can be read from the SAME connection (single-connection topology).
+    If the answer has no sendonly audio, recv_holder['track'] stays None and the caller can
+    disable the mic.
+    """
     base = cfg['FRIGATE_URL'].rstrip('/')
     wsbase = base.replace('http://','ws://').replace('https://','wss://')
     ws_url = f"{wsbase}/api/go2rtc/api/ws?src={stream}"
 
     rcfg = RTCConfiguration(iceServers=[])  # critical: no STUN (unreachable -> 0 candidates)
     pc = RTCPeerConnection(rcfg)
-    # consumer: recvonly AUDIO only + sendonly mic (Gemini audio). NO video
-    # transceiver: receiving+decoding the twoway H264 stream correlates with AD410
-    # crashes (H264Decoder "Invalid data" floods during interactions). The backchannel
-    # only needs audio both ways; video is watched via Frigate's normal streams, never
-    # inside the talk connection (mirrors amcrest-intercom's separate video card).
+    # consumer: recvonly AUDIO (camera's backchannel mic) + sendonly mic (Gemini audio).
+    # NO video transceiver: the backchannel only needs audio both ways; video is
+    # watched via Frigate's normal streams. The received-audio track is what
+    # mic_from_webtrack consumes as the visitor mic.
     pc.addTransceiver('audio', direction='recvonly')
+    recv_holder = {'track': None}
+
+    @pc.on('track')
+    def on_track(track):
+        if track.kind == 'audio' and recv_holder['track'] is None:
+            log.info("talkback: received-audio track available (camera mic path)")
+            recv_holder['track'] = track
+
     mic = GeminiAudioTrack(audio_q)
     pc.addTrack(mic)
 
@@ -513,8 +683,10 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
         if pc.iceConnectionState not in ('connected','completed'):
             keep_task.cancel(); await ws.close(); await pc.close()
             raise RuntimeError("ICE never connected")
-        log.info("talkback connected (AI audio -> doorbell speaker)")
-        return pc, ws, mic, keep_task
+        log.info("talkback connected (AI audio -> doorbell speaker; mic via received-audio track)"
+                 if recv_holder.get('track') is not None else
+                 "talkback connected (AI audio -> doorbell speaker; NOTE: no received-audio track -> mic may be disabled)")
+        return pc, ws, mic, keep_task, recv_holder
     except Exception:
         # cleanup on any failure before returning
         try: await ws.close()
@@ -558,15 +730,22 @@ async def run_once(duration_s, system_prompt):
     async with cm as session:
         # 2. talkback to go2rtc (needs the audio track; go2rtc pushes to speaker)
         try:
-            pc, ws, mic, keep_task = await talkback_connect(cfg, audio_q)
+            pc, ws, mic, keep_task, recv_holder = await talkback_connect(cfg, audio_q)
         except Exception as e:
             log.error("talkback connect failed: %s", e)
             return 2
 
-        # 3. receive loop + mic capture, concurrently (echo-gated half-duplex)
+        # 3. receive loop + mic capture, concurrently (echo-gated half-duplex).
+        #    Primary mic source: the twoway connection's received-audio track (single-
+        #    connection topology, matches the browser PWA). Fallback: RTSP sub relay,
+        #    used only if the camera offered no received-audio track this time.
         speaking = SpeakingState()
         recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev, speaking))
-        mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev, speaking))
+        if recv_holder.get('track') is not None:
+            mic_task = asyncio.create_task(mic_from_webtrack(session, recv_holder, stop_ev, speaking))
+        else:
+            log.warning("mic: no received-audio track; falling back to RTSP sub relay")
+            mic_task = asyncio.create_task(mic_to_gemini(session, stop_ev, speaking))
         log.info("bridge running up to %ss. Speak at the door.", duration_s)
 
         # Prime: tell Gemini to greet the visitor once connected.

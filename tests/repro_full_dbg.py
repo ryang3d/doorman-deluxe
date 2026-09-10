@@ -44,9 +44,9 @@ async def main():
     orig=ab.talkback_connect
     holder={}
     async def wrapped(cfg2,q,stream='front_doorbell_twoway'):
-        pc,ws,mic,keep=await orig(cfg2,q,stream)
+        pc,ws,mic,keep,recv=await asyncio.wait_for(orig(cfg2,q,stream), timeout=25)
         holder['pc']=pc
-        return pc,ws,mic,keep
+        return pc,ws,mic,keep,recv
     ab.talkback_connect=wrapped
     asyncio.create_task(ice_watcher(cfg, holder, stop))
     try:
