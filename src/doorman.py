@@ -155,10 +155,24 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     cm = client.aio.live.connect(model=model, config=cfg_tools)
 
     async with cm as session:
-        try:
-            pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
-        except Exception as e:
-            log.error("talkback connect failed: %s", e)
+        # Talkback connect with retry. Opening the AD410's backchannel session
+        # races the camera's two always-on streams: even with record+detect
+        # consolidated onto go2rtc relays, the FIRST backchannel open can hit a
+        # one-shot RTSP i/o timeout while the camera's audio subsystem settles.
+        # The backchannel streams fine immediately afterward (verified by direct
+        # pull), so retry with a settle delay before giving up on the greeting.
+        pc = ws = mic = keep_task = recv_holder = None
+        for attempt in range(3):
+            try:
+                pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
+                break
+            except Exception as e:
+                log.warning("talkback connect attempt %d/3 failed: %s", attempt + 1,
+                            (str(e).splitlines()[0] if str(e) else e)[:120])
+                if attempt < 2:
+                    await asyncio.sleep(8.0)
+        if ws is None:
+            log.error("talkback connect failed after 3 attempts; skipping interaction")
             return 2
 
         speaking = ab.SpeakingState()
