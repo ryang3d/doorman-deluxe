@@ -477,54 +477,90 @@ async def mic_from_webtrack(session, recv_holder, stop_ev, speaking, wait_s=20):
 
 
 # ---------------------------------------------------------------- camera health gate
-async def camera_healthy(stream='front_doorbell', timeout_s=10):
-    """True if go2rtc has a LIVE RTSP producer for `stream` (remote_addr set).
+async def camera_healthy(camera='front_doorbell', timeout_s=10, min_fps=0.5):
+    """True if Frigate is ACTUALLY decoding frames from `camera` right now.
 
-    This is the health gate that decides whether the camera is actually serving
-    streams, not just whether its HTTP port answers. After a two-way interaction
-    the AD410 can wedge its RTSP server (~1-5 min, self-recovers); Prowl reports
-    'up' as soon as HTTP :80 returns but Frigate's ffmpeg may still be re-dialing.
-    A live producer with a remote_addr means go2rtc has re-acquired the camera.
-    Uses the go2rtc HTTP API (no auth needed for the read path)."""
+    Why this replaced the go2rtc-producer check (2026-09-10): the old version returned
+    True whenever go2rtc's stream entry had a producer with a non-empty `remote_addr`.
+    go2rtc KEEPS that stale record after the camera stops answering, so the check
+    passed while the camera's RTSP was unreachable - a pure false positive. Proof: at
+    2026-09-10 09:29:00 the gate returned True on its first probe, ~1.5s before a dial
+    to <camera-ip>:554 timed out; three backchannel retries then burned 40s and the
+    interaction was skipped with no warning from the gate.
+
+    HA's sensor.front_doorbell_camera_status_2 is no better as a gate: it polls HTTP
+    :80, and RTSP :554 can be dead while :80 still answers. During that same 40s of
+    total RTSP failure HA reported `up` the whole time.
+
+    Frigate's camera_fps/process_fps is the only signal observed to track an outage:
+    it read ~0.0-0.2 during the wedge and ~5.0 when healthy.
+
+    Fail-open: if Frigate's API cannot be reached we return True rather than making
+    the visitor wait, because the caller proceeds after its bounded wait anyway. A
+    definitive reading of no frames returns False.
+    """
     try:
         import aiohttp
         cfg = load_config()
         base = cfg['FRIGATE_URL'].rstrip('/')
-        url = f"{base}/api/go2rtc/api/streams"
+        url = f"{base}/api/stats"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
             async with http.get(url) as resp:
                 if resp.status != 200:
-                    log.warning("camera health: go2rtc streams HTTP %s", resp.status)
-                    return False
+                    log.warning("camera health: /api/stats HTTP %s; assuming OK", resp.status)
+                    return True
                 data = await resp.json()
-        v = data.get(stream) or {}
-        for p in (v.get('producers') or []):
-            if isinstance(p, dict) and p.get('remote_addr'):
-                return True
+        cameras = data.get('cameras') or {}
+        if camera not in cameras:
+            # Unknown to Frigate: we have no signal either way. Fail open, otherwise
+            # a mismatched camera name would block every single ring for max_wait_s.
+            log.warning("camera health: %s not in Frigate stats; assuming OK", camera)
+            return True
+        cam = cameras.get(camera) or {}
+        fps_cam = float(cam.get('camera_fps') or 0.0)
+        fps_proc = float(cam.get('process_fps') or 0.0)
+        best = max(fps_cam, fps_proc)
+        if best >= min_fps:
+            return True
+        log.info("camera health: %s producing no frames (camera_fps=%.2f process_fps=%.2f "
+                 "< %.2f)", camera, fps_cam, fps_proc, min_fps)
         return False
     except Exception as e:
-        log.warning("camera health probe error: %s", e)
-        return False
-
-
-async def wait_camera_healthy(max_wait_s=90, poll_s=5, stream='front_doorbell'):
-    """Block until the camera's go2rtc source is live again (post-wedge recovery).
-    Called before starting a new interaction so Doorman does not open the twoway
-    backchannel into a still-wedged camera. Returns True if healthy (or on success
-    of the first probe), False if still unhealthy after max_wait_s (caller proceeds
-    anyway rather than dropping the ring)."""
-    import time
-    if await camera_healthy(stream):
+        log.warning("camera health probe error: %s; assuming OK", e)
         return True
-    log.warning("camera health: %s not live; waiting for recovery (%.0fs budget)", stream, max_wait_s)
+
+
+async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
+                              consecutive=2, min_fps=0.5):
+    """Block until Frigate is decoding frames again, requiring `consecutive` healthy
+    samples in a row so one transient reading does not open the gate.
+
+    Called before starting an interaction so Doorman does not open the twoway
+    backchannel into a camera that is not delivering frames. Returns True if healthy,
+    False if still unhealthy after max_wait_s (the caller proceeds anyway rather than
+    dropping the ring)."""
+    import time
+    healthy_run = 0
+    warned = False
     deadline = time.monotonic() + max_wait_s
-    while time.monotonic() < deadline:
+    while True:
+        if await camera_healthy(camera, min_fps=min_fps):
+            healthy_run += 1
+            if healthy_run >= consecutive:
+                if warned:
+                    log.info("camera health: %s recovered", camera)
+                return True
+        else:
+            healthy_run = 0
+            if not warned:
+                warned = True
+                log.warning("camera health: %s not producing frames; waiting up to %.0fs",
+                            camera, max_wait_s)
+        if time.monotonic() >= deadline:
+            log.warning("camera health: %s still not producing frames after %.0fs; "
+                        "proceeding anyway", camera, max_wait_s)
+            return False
         await asyncio.sleep(poll_s)
-        if await camera_healthy(stream):
-            log.info("camera health: %s recovered", stream)
-            return True
-    log.warning("camera health: %s still down after %.0fs; proceeding anyway", stream, max_wait_s)
-    return False
 
 
 class GeminiAudioTrack(AudioStreamTrack):

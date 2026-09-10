@@ -511,12 +511,19 @@ async def amain(args):
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
-        # Camera health gate: after a two-way interaction the AD410 can wedge its
-        # RTSP server (~1-5 min, self-recovers). Wait for go2rtc to re-acquire the
-        # camera before opening the twoway backchannel, so we don't start into a
-        # still-wedged camera. Bounded (90s) so a ring is never dropped forever.
+        # Camera health gate. The AD410 wedges its RTSP server around interactions
+        # (self-recovers in ~1-5 min) and both cheap proxies lie about it: HA's
+        # camera_status sensor polls HTTP :80 and reported `up` through 40s of total
+        # RTSP failure, and go2rtc keeps a stale producer record with a populated
+        # remote_addr after the camera stops answering. The gate therefore keys off
+        # Frigate's actual frame flow (camera_fps/process_fps), the only signal
+        # observed to track an outage. Bounded so a ring is never dropped forever.
         try:
-            await ab.wait_camera_healthy(max_wait_s=90, poll_s=5)
+            ok = await ab.wait_camera_healthy(max_wait_s=90, poll_s=5)
+            if ok:
+                log.info("camera health gate: camera ready")
+            else:
+                log.warning("camera health gate: timed out; starting anyway")
         except Exception as e:
             log.warning("camera health gate error: %s; proceeding", e)
         # launch interaction; serialize so we don't overlap. End early if the visitor
