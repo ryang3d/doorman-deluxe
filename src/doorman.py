@@ -391,50 +391,67 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
 
     last_trigger_ts = 0.0
     import time as _time
-    async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30) as ws:
-        # HA auth handshake
-        msg = _json.loads(await ws.recv())
-        if msg.get('type') != 'auth_required':
-            raise RuntimeError("HA websocket did not ask for auth: %s" % msg)
-        await ws.send(_json.dumps({'type': 'auth', 'access_token': token}))
-        auth = _json.loads(await ws.recv())
-        if auth.get('type') != 'auth_ok':
-            raise RuntimeError("HA websocket auth failed: %s" % auth)
-        # subscribe to state_changed
-        await ws.send(_json.dumps({'id': 1, 'type': 'subscribe_events', 'event_type': 'state_changed'}))
-        sub = _json.loads(await ws.recv())
-        if not sub.get('success'):
-            raise RuntimeError("subscribe_events failed: %s" % sub)
-        log.info("doorbell listener subscribed to HA state_changed (sensor=%s)", sensor)
+    # The HA WebSocket is long-lived and can drop mid-interaction (default keepalive
+    # ping interval is shorter than a voice session -> "keepalive ping timeout").
+    # That used to be fatal: ConnectionClosedError propagated out of
+    # doorbell_event_listener -> asyncio.gather -> amain -> process exit -> container
+    # restart (RestartCount incremented every interaction). Now: longer keepalive
+    # timeouts AND a reconnect loop so a drop logs + re-subscribes instead of dying.
+    while True:
+        try:
+            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
+                                          ping_interval=30, ping_timeout=60) as ws:
+                # HA auth handshake
+                msg = _json.loads(await ws.recv())
+                if msg.get('type') != 'auth_required':
+                    raise RuntimeError("HA websocket did not ask for auth: %s" % msg)
+                await ws.send(_json.dumps({'type': 'auth', 'access_token': token}))
+                auth = _json.loads(await ws.recv())
+                if auth.get('type') != 'auth_ok':
+                    raise RuntimeError("HA websocket auth failed: %s" % auth)
+                # subscribe to state_changed
+                await ws.send(_json.dumps({'id': 1, 'type': 'subscribe_events', 'event_type': 'state_changed'}))
+                sub = _json.loads(await ws.recv())
+                if not sub.get('success'):
+                    raise RuntimeError("subscribe_events failed: %s" % sub)
+                log.info("doorbell listener subscribed to HA state_changed (sensor=%s)", sensor)
 
-        while True:
-            raw = await ws.recv()
-            try:
-                msg = _json.loads(raw)
-            except Exception:
-                continue
-            ev_type = msg.get('type')
-            if ev_type == 'event':
-                ev = msg.get('event', {})
-                data = ev.get('data', {})
-                if data.get('entity_id') != sensor:
-                    continue
-                new_state = (data.get('new_state') or {})
-                old_state = (data.get('old_state') or {})
-                n = new_state.get('state')
-                o = old_state.get('state')
-                now = _time.monotonic()
-                if n == 'on' and o != 'on' and (now - last_trigger_ts) >= INTERACTION_COOLDOWN_S:
-                    last_trigger_ts = now
-                    log.info("TRIGGER (doorbell press): %s -> %s", o, n)
-                    trigger_text = doorman_prompt.interaction_trigger_text(
-                        recognized_name=None, doorbell_pressed=True, label='person')
-                    prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                    await handle_event(prompt, trigger_text, {'label': 'person', 'name': None, 'doorbell_pressed': True})
-            elif ev_type == 'result' and msg.get('id') == 1:
-                pass  # subscription confirmed
-            elif ev_type == 'ping':
-                await ws.send(_json.dumps({'type': 'pong', 'id': msg.get('id')}))
+                while True:
+                    raw = await ws.recv()
+                    try:
+                        msg = _json.loads(raw)
+                    except Exception:
+                        continue
+                    ev_type = msg.get('type')
+                    if ev_type == 'event':
+                        ev = msg.get('event', {})
+                        data = ev.get('data', {})
+                        if data.get('entity_id') != sensor:
+                            continue
+                        new_state = (data.get('new_state') or {})
+                        old_state = (data.get('old_state') or {})
+                        n = new_state.get('state')
+                        o = old_state.get('state')
+                        now = _time.monotonic()
+                        if n == 'on' and o != 'on' and (now - last_trigger_ts) >= INTERACTION_COOLDOWN_S:
+                            last_trigger_ts = now
+                            log.info("TRIGGER (doorbell press): %s -> %s", o, n)
+                            trigger_text = doorman_prompt.interaction_trigger_text(
+                                recognized_name=None, doorbell_pressed=True, label='person')
+                            prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
+                            await handle_event(prompt, trigger_text, {'label': 'person', 'name': None, 'doorbell_pressed': True})
+                    elif ev_type == 'result' and msg.get('id') == 1:
+                        pass  # subscription confirmed
+                    elif ev_type == 'ping':
+                        await ws.send(_json.dumps({'type': 'pong', 'id': msg.get('id')}))
+        except _aio.CancelledError:
+            raise
+        except websockets.ConnectionClosed as e:
+            log.warning("HA WS doorbell listener dropped (%s); reconnecting in 3s", e)
+            await _aio.sleep(3)
+        except Exception as e:
+            log.error("HA WS doorbell listener error (%s); reconnecting in 5s", e)
+            await _aio.sleep(5)
 
 
 # ---------------------------------------------------------------- main / CLI

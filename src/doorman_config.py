@@ -40,6 +40,12 @@ DEFAULTS = {
     'DOORMAN_DOORBELL_HOST': '<camera-ip>',
     'DOORMAN_DOORBELL_USER': 'admin',
     'DOORMAN_DOORBELL_PASSWORD': '',
+    # Visitor mic source. go2rtc RTSP RELAY for the front_doorbell_sub stream
+    # (subtype=1): reuses go2rtc's already-open camera RTSP session instead of
+    # opening a second direct connection to the AD410 (the HTTP getAudio intercom
+    # did that, and it wedged the camera at teardown). Overridable; host:port is
+    # the go2rtc RTSP relay (Frigate's bundled go2rtc), not the HTTP API port.
+    'DOORMAN_MIC_RTSP': 'rtsp://<frigate-host>:8554/front_doorbell_sub',
     # Gemini Live
     'GEMINI_API_KEY': '',
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
@@ -99,6 +105,7 @@ def load():
         'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
         'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
         'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
+        'DOORMAN_MIC_RTSP': 'DOORMAN_MIC_RTSP',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
     }
