@@ -9,12 +9,68 @@ Identity context: pass sub_label (e.g. "Ryan") or None for an unrecognized perso
 import json
 
 
+# Playful, natural one-liners Doorman can say when an animal is at the door.
+# Gemini is instructed to say ONE of these in its own fun, varied way, so the
+# spoken line differs from event to event rather than repeating a fixed sentence.
+ANIMAL_LINES = {
+    'cat': [
+        "Oh, a kitty at the door! Here kitty kitty, you're not supposed to be in here.",
+        "Scram, kitty cat! Nice to see you but the door's not open for the feline.",
+        "Well well, a cat on the front porch. I hope you brought a little greeting for me.",
+        "Oh my, a little cat has wandered in! Do you mind me saying hi?",
+        "I see a cat at the door! Do you come here often?",
+        "A cat at the front door! I can't open for a feline but I can say hello.",
+    ],
+    'dog': [
+        "Well hello there, you big friendly doggy! Who's a good boy?",
+        "A dog at the front door! You're such a good boy, come to say hi.",
+        "Hey, a dog has stopped by! I hope you brought a nice greeting for me.",
+        "Oh, a pup at the door! Do you mind me saying hello to you?",
+        "Well, well, a dog has wandered in! I can't open the door but I can say hi.",
+        "A nice big doggy at the door! You look like a good friend.",
+    ],
+}
+
+# A generic fallback for any label that isn't in ANIMAL_LINES.
+_ANIMAL_LINE_GENERIC = "Oh, I see a little visitor at the door! I can say hi but I can't open for you."
+
+
+def animal_greeting_line(label):
+    """Pick ONE natural, animal-specific one-liner from the pool for `label`.
+
+    Called per event so the spoken content varies; the model just performs the
+    chosen line. For unknown labels, return a generic line so we don't crash and
+    still have something fun to say.
+    """
+    import random
+    lines = ANIMAL_LINES.get(label)
+    if not lines:
+        return _ANIMAL_LINE_GENERIC
+    return random.choice(lines)
+
+
 def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
-                         household_hint=("the residents")):
+                         household_hint=("the residents"), animal_label=None):
     """Return the Gemini Live system prompt for a doorbell interaction.
 
     recognized_name: Frigate sub_label if a known face was matched (e.g. "Ryan"), else None.
+    animal_label: if set ('cat'/'dog'), produce a short, playful, animal-aware prompt
+                  instead of the full human visitor prompt. A concrete greeting
+                  line is picked from ANIMAL_LINES so it varies per event.
     """
+    if animal_label:
+        line = animal_greeting_line(animal_label)
+        return (
+            "You are Doorman, the AI voice assistant at the front door of a private "
+            "home, speaking through the doorbell speaker. A " + animal_label +
+            " has been detected at the front door. There is no person on the other "
+            "end - it is just a " + animal_label + ". Say the greeting below in a "
+            "natural, playful, in-character, varied way (under 8 seconds); you may "
+            "add a touch of your own flair but keep the core line: " + line +
+            " Do not run a full visitor conversation, do not ask questions, and do "
+            "not reveal whether anyone is home. Do not call any tools - just say "
+            "the greeting and the interaction will end on its own."
+        )
     identity = ""
     if recognized_name:
         identity = (
@@ -70,9 +126,13 @@ def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
 
 
 def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False,
-                             label="person"):
-    """Short text sent to prime the session with what triggered the interaction.
-    Lets the model greet appropriately (e.g. someone who rang vs someone detected)."""
+                             label="person", animal=False):
+    """Short text to prime the session with what triggered the interaction."""
+    if animal:
+        return ("A " + label + " was detected at the front door. Say a single, "
+                "short, playful one-liner that you can see it, then wrap up. Do "
+                "not hold a full conversation - it is a " + label + ", not a "
+                "person.")
     parts = []
     if doorbell_pressed:
         parts.append("The visitor rang the doorbell.")

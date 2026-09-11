@@ -56,10 +56,55 @@ def test_decide_action_matrix():
     print("PASS decide_action matrix")
 
 
+def test_animal_lines_pool():
+    assert 'cat' in dp.ANIMAL_LINES and len(dp.ANIMAL_LINES['cat']) >= 3
+    assert 'dog' in dp.ANIMAL_LINES and len(dp.ANIMAL_LINES['dog']) >= 3
+    for line in dp.ANIMAL_LINES['cat'] + dp.ANIMAL_LINES['dog']:
+        assert isinstance(line, str) and line.strip()
+    print("PASS animal lines pool has cat + dog entries")
+
+
+def test_animal_greeting_line():
+    g = dp.animal_greeting_line('cat')
+    assert g in dp.ANIMAL_LINES['cat'], g
+    g2 = dp.animal_greeting_line('dog')
+    assert g2 in dp.ANIMAL_LINES['dog'], g2
+    g3 = dp.animal_greeting_line('bird')
+    assert isinstance(g3, str) and g3.strip()  # unknown label -> generic line
+    print("PASS animal_greeting_line returns a pool line (generic fallback for others)")
+
+
+def test_animal_prompt():
+    p = dp.build_doorman_prompt(animal_label='cat')
+    assert 'cat' in p
+    assert 'Do not call any tools' in p
+    assert 'Say the greeting below' in p  # the fun-instruction (picks a concrete line)
+    # a concrete line from the cat pool must be embedded
+    assert any(line in p for line in dp.ANIMAL_LINES['cat'])
+    # must not look like the human unknown-visitor prompt
+    assert 'NOT recognized as a household member' not in p
+    # person prompt must be unchanged
+    hp = dp.build_doorman_prompt(recognized_name=None)
+    assert 'NOT recognized as a household member' in hp
+    print("PASS animal prompt is animal-aware + playful; person prompt unchanged")
+
+
+def test_animal_trigger_text():
+    t = dp.interaction_trigger_text(label='dog', animal=True)
+    assert 'dog' in t and 'one-liner' in t
+    t2 = dp.interaction_trigger_text(label='person')
+    assert 'detected at the door' in t2 and 'one-liner' not in t2
+    print("PASS animal trigger text; person trigger text unchanged")
+
+
 if __name__ == '__main__':
     test_config_default_voice()
     test_config_env_override()
     test_animal_max_s_numeric()
     test_animal_labels()
     test_decide_action_matrix()
+    test_animal_lines_pool()
+    test_animal_greeting_line()
+    test_animal_prompt()
+    test_animal_trigger_text()
     print("ALL ANIMAL TRIGGER TESTS PASS")
