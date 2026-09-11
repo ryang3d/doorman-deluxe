@@ -63,6 +63,8 @@ DEFAULTS = {
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
+    'DOORMAN_ANIMAL_BEHAVIOR': 'voice',
+    'DOORMAN_ANIMAL_MAX_S': 45.0,
     # person = trigger on Frigate person detection (default); doorbell = trigger on
     # the HA doorbell_pressed binary_sensor going on; hybrid = trigger on either.
     'DOORMAN_TRIGGER_MODE': 'person',
@@ -112,6 +114,8 @@ def load():
         'FRONT_CAMERA': 'FRONT_CAMERA', 'CAM_MIC_RTSP': 'CAM_MIC_RTSP',
         'GEMINI_API_KEY': 'GEMINI_API_KEY', 'DOORMAN_VOICE': 'DOORMAN_VOICE',
         'DOORMAN_PERSONALIZED_GREETING': 'DOORMAN_PERSONALIZED_GREETING',
+        'DOORMAN_ANIMAL_BEHAVIOR': 'DOORMAN_ANIMAL_BEHAVIOR',
+        'DOORMAN_ANIMAL_MAX_S': 'DOORMAN_ANIMAL_MAX_S',
         'DOORMAN_TRIGGER_MODE': 'DOORMAN_TRIGGER_MODE',
         'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
         'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
@@ -136,7 +140,8 @@ def load():
                 break
 
     # normalise numerics / booleans
-    for numk in ('MQTT_PORT', 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S', 'INTERACTION_COOLDOWN_S'):
+    for numk in ('MQTT_PORT', 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S',
+                 'INTERACTION_COOLDOWN_S', 'DOORMAN_ANIMAL_MAX_S'):
         try:
             merged[numk] = float(merged[numk]) if numk != 'MQTT_PORT' else int(float(merged[numk]))
             if numk == 'MQTT_PORT':
