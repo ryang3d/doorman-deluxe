@@ -2,11 +2,11 @@
 
 AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker using a Gemini Live two-way voice session, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
 
-Everything runs locally except the voice engine: Frigate (person/face detection + snapshots), go2rtc WebRTC talkback to the doorbell, Home Assistant (doorbell-press trigger, notifications, camera snapshots), and a Gemini Live cloud voice session.
+Everything runs locally except the voice engine: Frigate (person/face/cat/dog detection + snapshots), go2rtc WebRTC talkback to the doorbell, Home Assistant (doorbell-press trigger, notifications, camera snapshots), and a Gemini Live cloud voice session.
 
 ## Architecture
 
-- Trigger (configurable): Frigate person detection via MQTT, or Home Assistant `binary_sensor.doorbell_pressed` via WebSocket.
+- Trigger (configurable): Frigate person/face/cat/dog detection via MQTT, or Home Assistant `binary_sensor.doorbell_pressed` via WebSocket. Cat/dog detections get a configurable animal reaction (playful spoken greeting + notification) instead of a full visitor conversation; see `DOORMAN_ANIMAL_BEHAVIOR`.
 - Voice: Gemini Live two-way audio (cloud). Mic comes off the doorbell camera RTSP; AI speech is pushed back through go2rtc consumer-mode WebRTC to the doorbell speaker.
 - Tools the model can call: snapshot the front door, notify the homeowner.
 - Snapshots in notifications are captured by HA's `camera.snapshot` and served at HA `/local` (no SSH, no extra port).
@@ -48,6 +48,8 @@ Key options (see `.env.example` for the full list):
 - `DOORMAN_PERSONALIZED_GREETING` - `true` waits for face recognition and greets by name (adds ~10-20s before first speech); `false` greets immediately on detection.
 - `DOORMAN_TRIGGER_MODE` - `person` (Frigate detection, default), `doorbell` (HA `binary_sensor.doorbell_pressed`), or `hybrid` (either).
 - `DOORMAN_DOORBELL_SENSOR` - HA entity watched in `doorbell` trigger mode.
+- `DOORMAN_ANIMAL_BEHAVIOR` - what to do on a Frigate cat/dog detection: `voice` (default, playful spoken greeting + notification), `notify` (notification only), or `off` (ignore animals).
+- `DOORMAN_ANIMAL_MAX_S` - hard cap (seconds) on an animal voice session.
 - `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.
 - `DOORMAN_SNAPSHOT_RETENTION` - keep at most this many recent local snapshots (0 = keep all / no pruning).
