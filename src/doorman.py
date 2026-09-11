@@ -31,6 +31,9 @@ MQTT_HOST = _CFG['MQTT_HOST']
 MQTT_PORT = _CFG['MQTT_PORT']
 FRIGATE_TOPIC = _CFG['FRIGATE_TOPIC']
 FRONT_CAMERA = _CFG['FRONT_CAMERA']      # Frigate camera name for the doorbell
+ANIMAL_LABELS = ('cat', 'dog')  # Frigate labels that get the animal reaction
+                                # (short animal-aware greeting, not a full human convo)
+ANIMAL_MAX_S = _CFG['DOORMAN_ANIMAL_MAX_S']  # hard cap on one animal voice session
 INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
 INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
 IDLE_TIMEOUT_S = _CFG['IDLE_TIMEOUT_S']                     # end interaction after this many idle seconds
@@ -281,6 +284,25 @@ def _parse_sub_label(sub):
         name = sub[0] if sub else None
         return name if isinstance(name, str) else None
     return sub if isinstance(sub, str) else None
+
+
+def _decide_trigger_action(label, animal_behavior):
+    """Pick the Doorman reaction for a Frigate label.
+
+    Returns one of:
+      'animal-voice'   label in ANIMAL_LABELS, behavior is voice (or unset) - default
+      'animal-notify'  label in ANIMAL_LABELS, behavior == 'notify'
+      'animal-off'     label in ANIMAL_LABELS, behavior == 'off' (ignore)
+      'person'         not an animal (normal human-conversation voice path)
+    """
+    if label in ANIMAL_LABELS:
+        b = str(animal_behavior or 'voice').strip().lower()
+        if b == 'off':
+            return 'animal-off'
+        if b == 'notify':
+            return 'animal-notify'
+        return 'animal-voice'
+    return 'person'
 
 
 async def frigate_event_listener(handle_event, personalized_greeting=True):

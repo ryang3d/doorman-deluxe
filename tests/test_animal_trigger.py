@@ -38,8 +38,28 @@ def test_animal_max_s_numeric():
     print("PASS ANIMAL_MAX_S numeric normalize + override")
 
 
+def test_animal_labels():
+    assert 'cat' in dm.ANIMAL_LABELS and 'dog' in dm.ANIMAL_LABELS
+    assert 'person' not in dm.ANIMAL_LABELS
+    assert 'bird' not in dm.ANIMAL_LABELS
+    print("PASS animal labels (cat/dog only, no bird)")
+
+
+def test_decide_action_matrix():
+    assert dm._decide_trigger_action('cat', 'voice') == 'animal-voice'
+    assert dm._decide_trigger_action('dog', 'notify') == 'animal-notify'
+    assert dm._decide_trigger_action('cat', 'off') == 'animal-off'
+    assert dm._decide_trigger_action('cat', '') == 'animal-voice'    # default
+    assert dm._decide_trigger_action('cat', None) == 'animal-voice'  # default
+    assert dm._decide_trigger_action('person', 'voice') == 'person'
+    assert dm._decide_trigger_action('bird', 'voice') == 'person'
+    print("PASS decide_action matrix")
+
+
 if __name__ == '__main__':
     test_config_default_voice()
     test_config_env_override()
     test_animal_max_s_numeric()
+    test_animal_labels()
+    test_decide_action_matrix()
     print("ALL ANIMAL TRIGGER TESTS PASS")
