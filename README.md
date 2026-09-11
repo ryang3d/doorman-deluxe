@@ -37,7 +37,7 @@ Everything runs locally except the voice engine: Frigate (person/face/cat/dog de
 
    `docker compose logs -f doorman`
 
-   Healthy startup logs `personalized greeting enabled: <bool>` and `subscribed to <trigger>`.
+   Healthy startup logs `personalized greeting enabled: <bool>`, `trigger mode: <mode>`, `animal behavior: <voice|notify|off>`, and `subscribed to frigate/events`.
 
 The compose file uses `network_mode: host` (Linux only). This is required because WebRTC/RTSP to the camera and Frigate must behave like bare metal; bridge networking breaks media.
 
@@ -83,5 +83,8 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
 ## Testing / troubleshooting
 
 - Door test: `docker compose logs -f doorman` then walk up or ring the bell; watch for `TRIGGER` and `[gemini said]`.
-- Unit tests: `cd tests && .venv/bin/python test_config.py test_snapshot_http.py ...`
+- Unit tests: run from the repo root, one at a time: `.venv/bin/python tests/test_animal_trigger.py` (all config, decision, prompt, and reaction unit tests). Same pattern for `tests/test_config.py`, `tests/test_snapshot.py`, etc.
+- Animal test: publish a synthetic Frigate cat event to the MQTT broker and watch for `TRIGGER`, `animal notify`, and `[gemini said]` lines:
+  `mosquitto_pub -h <mqtt> -p 1883 -u <user> -P <pass> -t frigate/events -m '{"type":"new","after":{"id":"cat-test-1","camera":"front_doorbell","label":"cat"}}'`
+  (Swap `label` to `dog` for a dog. Send a few times to confirm a different greeting line comes out each time.)
 - go2rtc talkback notes and verified transport facts: `TRANSPORT.md`.
