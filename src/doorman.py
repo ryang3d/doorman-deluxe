@@ -305,6 +305,31 @@ def _decide_trigger_action(label, animal_behavior):
     return 'person'
 
 
+async def animal_reaction(label, cfg, behavior):
+    """Animal reaction: notify Ryan (attaches a fresh doorbell frame), and for
+    'voice' run a short, animal-aware voice session. The caller has already
+    passed the camera-health gate before invoking this."""
+    import doorman_tools as _tools
+    msg = "A %s is at the front door." % label
+    try:
+        ok, val = await _tools.notify_ryan(msg)
+        log.info("animal notify for %s -> %s", label, val)
+    except Exception as e:
+        log.warning("animal notify error: %s", e)
+    if str(behavior).lower() != 'voice':
+        return
+    aprompt = doorman_prompt.build_doorman_prompt(animal_label=label)
+    atrigger = doorman_prompt.interaction_trigger_text(label=label, animal=True)
+    log.info("animal voice session starting for %s (cap %ss)", label, ANIMAL_MAX_S)
+    try:
+        await asyncio.wait_for(
+            run_interaction(aprompt, atrigger, duration_s=ANIMAL_MAX_S,
+                            idle_timeout_s=IDLE_TIMEOUT_S),
+            timeout=ANIMAL_MAX_S + 15)
+    except asyncio.TimeoutError:
+        log.warning("animal interaction overran cap")
+
+
 async def frigate_event_listener(handle_event, personalized_greeting=True):
     """Subscribe to frigate/events; trigger Doorman when a person is at the door.
 
@@ -406,7 +431,9 @@ async def frigate_event_listener(handle_event, personalized_greeting=True):
         if event_id in pending:
             p = pending[event_id]
             elapsed = now - p['new_ts']
-            settled = (p['name'] is not None) or (etype == 'end') or (elapsed >= RECOGNIZE_GRACE_S)
+            settled = (p['name'] is not None) or (etype == 'end') \
+                or (elapsed >= RECOGNIZE_GRACE_S) \
+                or (label in ANIMAL_LABELS)
             if settled and not p.get('triggered'):
                 p['triggered'] = True
                 # fire unless debounced by cooldown
@@ -530,9 +557,16 @@ async def amain(args):
     doorbell_sensor = cfg.get('DOORMAN_DOORBELL_SENSOR') or 'binary_sensor.doorbell_pressed'
     log.info("personalized greeting enabled: %s", personalized)
     log.info("trigger mode: %s", trigger_mode)
+    log.info("animal behavior: %s", cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice'))
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
+        label = meta.get('label', 'person')
+        behavior = str(cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice') or 'voice').lower()
+        action = _decide_trigger_action(label, behavior)
+        if action == 'animal-off':
+            log.info("animal %s detected; DOORMAN_ANIMAL_BEHAVIOR=off, ignoring", label)
+            return
         # Camera health gate. The AD410 wedges its RTSP server around interactions
         # (self-recovers in ~1-5 min) and both cheap proxies lie about it: HA's
         # camera_status sensor polls HTTP :80 and reported `up` through 40s of total
@@ -548,6 +582,10 @@ async def amain(args):
                 log.warning("camera health gate: timed out; starting anyway")
         except Exception as e:
             log.warning("camera health gate error: %s; proceeding", e)
+        if action in ('animal-voice', 'animal-notify'):
+            await animal_reaction(label, cfg, behavior)
+            log.info("animal reaction done (%s, %s)", label, behavior)
+            return
         # launch interaction; serialize so we don't overlap. End early if the visitor
         # goes silent (idle) so Doorman stops listening and can re-trigger later.
         try:

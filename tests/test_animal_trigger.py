@@ -97,6 +97,47 @@ def test_animal_trigger_text():
     print("PASS animal trigger text; person trigger text unchanged")
 
 
+async def _run_animal_voice():
+    calls = {}
+    async def fake_notify(message, cfg=None, image_path=None):
+        calls['notify'] = message
+        return True, 'sent'
+    async def fake_run(system_prompt, trigger_text, duration_s=None, idle_timeout_s=None):
+        calls['voice'] = {'prompt': system_prompt, 'trigger': trigger_text,
+                          'duration_s': duration_s}
+        return 0
+    orig_notify, orig_run = tools.notify_ryan, dm.run_interaction
+    tools.notify_ryan = fake_notify
+    dm.run_interaction = fake_run
+    try:
+        await dm.animal_reaction('cat', {}, 'voice')
+    finally:
+        tools.notify_ryan, dm.run_interaction = orig_notify, orig_run
+    assert 'cat' in calls.get('notify', ''), calls
+    assert 'cat' in calls.get('voice', {}).get('prompt', ''), calls
+    print("PASS animal_reaction voice: notify + short animal voice session")
+
+
+async def _run_animal_notify_only():
+    calls = {}
+    async def fake_notify(message, cfg=None, image_path=None):
+        calls['notify'] = message
+        return True, 'sent'
+    async def fake_run(system_prompt, trigger_text, duration_s=None, idle_timeout_s=None):
+        calls['voice'] = True
+        return 0
+    orig_notify, orig_run = tools.notify_ryan, dm.run_interaction
+    tools.notify_ryan = fake_notify
+    dm.run_interaction = fake_run
+    try:
+        await dm.animal_reaction('dog', {}, 'notify')
+    finally:
+        tools.notify_ryan, dm.run_interaction = orig_notify, orig_run
+    assert 'dog' in calls.get('notify', ''), calls
+    assert 'voice' not in calls, calls  # no voice session in notify mode
+    print("PASS animal_reaction notify: notify only, no voice session")
+
+
 if __name__ == '__main__':
     test_config_default_voice()
     test_config_env_override()
@@ -107,4 +148,6 @@ if __name__ == '__main__':
     test_animal_greeting_line()
     test_animal_prompt()
     test_animal_trigger_text()
+    asyncio.run(_run_animal_voice())
+    asyncio.run(_run_animal_notify_only())
     print("ALL ANIMAL TRIGGER TESTS PASS")
