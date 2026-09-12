@@ -50,7 +50,9 @@ Key options (see `.env.example` for the full list):
 - `DOORMAN_DOORBELL_SENSOR` - HA entity watched in `doorbell` trigger mode.
 - `DOORMAN_ANIMAL_BEHAVIOR` - what to do on a Frigate cat/dog detection: `voice` (default, playful spoken greeting + notification), `notify` (notification only), or `off` (ignore animals).
 - `DOORMAN_ANIMAL_MAX_S` - hard cap (seconds) on an animal voice session.
-- `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger).
+- `DOORMAN_PERSON_GATE` - HA occupancy sensor that must be held `on` for `DOORMAN_PERSON_HOLD_S` seconds before a Frigate person/face trigger fires (default: the front-patio person-occupancy zone on the doorbell cam). Set empty to disable the gate (trigger on first detection).
+- `DOORMAN_PERSON_HOLD_S` - seconds the door-zone gate sensor must stay `on` before a person/face trigger fires (default `5`). Animals and doorbell presses are unaffected.
+- `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger, door-zone gate).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.
 - `DOORMAN_SNAPSHOT_RETENTION` - keep at most this many recent local snapshots (0 = keep all / no pruning).
 
