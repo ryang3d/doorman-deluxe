@@ -595,10 +595,44 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
 
 
 # ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
+async def _seed_gate_from_state(hass_http, sensor, token, gate):
+    """One-shot GET /api/states/{sensor} to seed the gate hold on (re)connect.
+
+    Closes the gap where the sensor was already 'on' before the WS subscription
+    started: no state_changed then fires, so the hold clock (_on_since) would
+    otherwise stay None and a visitor standing still at the door would never
+    satisfy the gate. Call this right after each successful subscribe."""
+    import aiohttp
+    import time as _time
+    url = hass_http.rstrip('/') + '/api/states/' + sensor
+    headers = {'Authorization': 'Bearer ' + token}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers,
+                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status != 200:
+                    log.warning("door-zone gate seed: HTTP %s for %s", r.status, sensor)
+                    return
+                data = await r.json()
+    except Exception as e:
+        log.warning("door-zone gate seed: %s", e)
+        return
+    state = (data or {}).get('state')
+    now = _time.monotonic()
+    if state == 'on':
+        gate.mark_on(now)
+        log.info("door-zone gate seed: %s is on -> hold started now", sensor)
+    else:
+        gate.mark_off(now)
+        log.info("door-zone gate seed: %s is %r -> hold not started", sensor, state)
+
+
 async def doorzone_gate_listener(gate, sensor=None):
     """Subscribe to HA state_changed for the door-zone occupancy sensor and feed
     DoorZoneGate.mark_on/mark_off. 'off' and 'unavailable' both reset the hold.
-    Same connect/auth/pong/reconnect skeleton as doorbell_event_listener."""
+    Same connect/auth/pong/reconnect skeleton as doorbell_event_listener.
+    Seeds the hold from a one-shot GET /api/states after each (re)connect so a
+    sensor that is already 'on' at subscription time still counts down."""
     import asyncio as _aio
     import websockets
     import json as _json
@@ -607,7 +641,8 @@ async def doorzone_gate_listener(gate, sensor=None):
     sensor = sensor or (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
     if not sensor:
         return
-    hass_ws = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
+    hass_http = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').rstrip('/')
+    hass_ws = hass_http.replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
     token = cfg.get('HASS_TOKEN') or ''
     if not token:
         log.warning("door-zone gate: no HASS_TOKEN, gate stays unsatisfied")
@@ -628,6 +663,9 @@ async def doorzone_gate_listener(gate, sensor=None):
                 if not sub.get('success'):
                     raise RuntimeError("subscribe_events failed: %s" % sub)
                 log.info("door-zone gate subscribed: %s", sensor)
+                # Seed the hold from the CURRENT state so a sensor already 'on'
+                # before this (re)connect still counts down (no state change yet).
+                await _seed_gate_from_state(hass_http, sensor, token, gate)
                 while True:
                     raw = await ws.recv()
                     try:

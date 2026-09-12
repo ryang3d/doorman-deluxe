@@ -242,6 +242,83 @@ async def _test_recognized_name_survives_gate():
     print("PASS face recognition name survives the gate (settled path)")
 
 
+# ---------------------------------------------------------------- seed (startup / reconnect state sync)
+class _FakeAioResp:
+    def __init__(self, state, status=200):
+        self._state = state
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def json(self):
+        return {'entity_id': 'binary_sensor.gate', 'state': self._state}
+
+
+class _FakeAioSession:
+    def __init__(self, state, status=200, raise_exc=False):
+        self._state = state
+        self._status = status
+        self._raise = raise_exc
+        self.calls = 0
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls += 1
+        if self._raise:
+            raise RuntimeError("boom")
+        return _FakeAioResp(self._state, self._status)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+async def _seed_case(state, hold=5.0, status=200, raise_exc=False):
+    """Run the real _seed_gate_from_state against a fake aiohttp; assert the
+    hold clock was set (on) or left unset (off)."""
+    import aiohttp
+    real_cs = aiohttp.ClientSession
+    fake = _FakeAioSession(state, status, raise_exc)
+    aiohttp.ClientSession = lambda *a, **k: fake
+    g = dm.DoorZoneGate('binary_sensor.gate', hold)
+    try:
+        await dm._seed_gate_from_state('http://ha.local:8123/', 'binary_sensor.gate', 'tok', g)
+    finally:
+        aiohttp.ClientSession = real_cs
+    return g, fake
+
+
+async def _test_seed_starts_hold_when_already_on():
+    g, fake = await _seed_case('on')
+    assert fake.calls == 1, "seed must hit /api/states exactly once"
+    assert g._on_since is not None, "seed 'on' must set the hold clock"
+    # before the hold window elapses it is not satisfied; after, it is
+    assert g.satisfied(g._on_since + g.hold_s - 0.5) is False
+    assert g.satisfied(g._on_since + g.hold_s) is True
+    print("PASS seed: sensor already 'on' -> hold clock starts (satisfies after hold_s)")
+
+
+async def _test_seed_ignores_when_off():
+    g, fake = await _seed_case('off')
+    assert fake.calls == 1
+    assert g._on_since is None, "seed with 'off' must NOT start the hold"
+    assert g.satisfied(1e9) is False
+    print("PASS seed: sensor 'off' -> hold clock not started")
+
+
+async def _test_seed_survives_http_error():
+    # a failing GET must not raise and must leave the gate in a known (not-on) state
+    g, fake = await _seed_case('on', raise_exc=True)
+    assert fake.calls == 1
+    assert g._on_since is None
+    print("PASS seed: HTTP error -> no raise, hold not started")
+
+
 if __name__ == '__main__':
     test_gate_default_entity()
     test_hold_default_and_override()
@@ -255,4 +332,7 @@ if __name__ == '__main__':
     asyncio.run(_test_settled_path_gate_gates())
     asyncio.run(_test_settled_path_gate_held())
     asyncio.run(_test_recognized_name_survives_gate())
+    asyncio.run(_test_seed_starts_hold_when_already_on())
+    asyncio.run(_test_seed_ignores_when_off())
+    asyncio.run(_test_seed_survives_http_error())
     print("ALL DOORZONE GATE TESTS PASS")
