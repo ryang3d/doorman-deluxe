@@ -77,6 +77,9 @@ DEFAULTS = {
     # a Frigate person/face detection may trigger. Empty = gate disabled.
     'DOORMAN_PERSON_GATE': 'binary_sensor.front_patio_motion_zone_person_occupancy',
     'DOORMAN_PERSON_HOLD_S': 5.0,
+    # comma-separated Frigate face names to fully ignore (no greeting). Case-insensitive,
+    # matched against the recognized sub_label name. Empty = ignore nobody.
+    'DOORMAN_IGNORED_FACES': '',
     # snapshots
     'DOORMAN_SNAPSHOT_DIR': '~/doorman/snapshots',
     # keep at most this many recent snapshots in the dir (0 = keep all / no pruning)
@@ -158,4 +161,11 @@ def load():
             pass
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
+    # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.
+    # Empty/blank -> empty set (feature off).
+    merged['DOORMAN_IGNORED_FACES'] = {
+        part.strip().lower() for part in
+        str(merged.get('DOORMAN_IGNORED_FACES', '')).split(',')
+        if part.strip()
+    }
     return merged
