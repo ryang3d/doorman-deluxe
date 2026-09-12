@@ -275,6 +275,31 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
 
 
 # ---------------------------------------------------------------- MQTT listener
+class DoorZoneGate:
+    """Supplemental gate: an HA occupancy sensor that must have been 'on'
+    continuously for hold_s seconds before a person/face Frigate trigger may fire.
+    mark_on/mark_off are fed by HA state_changed events; satisfied(now) is the
+    query the listener asks at trigger time. 'off' or 'unavailable' reset the hold
+    (treat both as not-on)."""
+    def __init__(self, entity_id, hold_s):
+        self.entity_id = entity_id
+        self.hold_s = float(hold_s)
+        self._on_since = None
+
+    def mark_on(self, now):
+        if self._on_since is None:
+            self._on_since = now
+
+    def mark_off(self, now):
+        self._on_since = None
+
+    def in_seconds(self, now):
+        return 0.0 if self._on_since is None else now - self._on_since
+
+    def satisfied(self, now):
+        return self.in_seconds(now) >= self.hold_s
+
+
 def _parse_sub_label(sub):
     """Frigate sub_label can be None, a str name, or a list ['Name', confidence].
     Return the clean name string or None."""
@@ -330,7 +355,7 @@ async def animal_reaction(label, cfg, behavior):
         log.warning("animal interaction overran cap")
 
 
-async def frigate_event_listener(handle_event, personalized_greeting=True):
+async def frigate_event_listener(handle_event, personalized_greeting=True, gate=None):
     """Subscribe to frigate/events; trigger Doorman when a person is at the door.
 
     personalized_greeting=True (default): WAIT for face recognition before deciding
@@ -375,6 +400,17 @@ async def frigate_event_listener(handle_event, personalized_greeting=True):
     pending = {}
     RECOGNIZE_GRACE_S = 25.0   # how long to wait for recognition after 'new'
     last_trigger_ts = 0.0
+    fast_fired = set()   # fast-path event_ids already triggered (person/face hold re-checks on updates)
+
+    def gate_blocked(label, now):
+        """True if a gate is configured, applies to this label, and is not yet held."""
+        if gate is None or label not in ('person', 'face'):
+            return False
+        if gate.satisfied(now):
+            return False
+        log.info("door-zone gate: %.1fs/%.1fs held, not triggering (label=%s)",
+                 gate.in_seconds(now), gate.hold_s, label)
+        return True
 
     while True:
         ev = await events.get()
@@ -392,7 +428,22 @@ async def frigate_event_listener(handle_event, personalized_greeting=True):
 
         # ---- Fast path: personalized greeting OFF -> greet immediately on detection ----
         if not personalized_greeting:
-            if etype == 'new' and label in ('person', 'cat', 'dog', 'face'):
+            if etype in ('new', 'update') and label in ('person', 'face'):
+                if event_id in fast_fired:
+                    continue
+                if gate_blocked(label, now):
+                    continue
+                if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
+                    log.info("trigger debounced (cooldown)")
+                    continue
+                last_trigger_ts = now
+                fast_fired.add(event_id)
+                log.info("TRIGGER (no recognition wait): %s at the door", label)
+                trigger_text = doorman_prompt.interaction_trigger_text(
+                    recognized_name=None, doorbell_pressed=False, label=label)
+                prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
+                await handle_event(prompt, trigger_text, {'label': label, 'name': None})
+            elif etype == 'new' and label in ANIMAL_LABELS:
                 if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
                     log.info("trigger debounced (cooldown)")
                     continue
@@ -435,6 +486,10 @@ async def frigate_event_listener(handle_event, personalized_greeting=True):
                 or (elapsed >= RECOGNIZE_GRACE_S) \
                 or (label in ANIMAL_LABELS)
             if settled and not p.get('triggered'):
+                if gate_blocked(label, now):
+                    # not settled enough on the gate; do NOT mark triggered -
+                    # a later update/end (while held) can still fire this event
+                    continue
                 p['triggered'] = True
                 # fire unless debounced by cooldown
                 if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
@@ -539,6 +594,69 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
             await _aio.sleep(5)
 
 
+# ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
+async def doorzone_gate_listener(gate, sensor=None):
+    """Subscribe to HA state_changed for the door-zone occupancy sensor and feed
+    DoorZoneGate.mark_on/mark_off. 'off' and 'unavailable' both reset the hold.
+    Same connect/auth/pong/reconnect skeleton as doorbell_event_listener."""
+    import asyncio as _aio
+    import websockets
+    import json as _json
+    import time as _time
+    cfg = _dc.load()
+    sensor = sensor or (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
+    if not sensor:
+        return
+    hass_ws = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
+    token = cfg.get('HASS_TOKEN') or ''
+    if not token:
+        log.warning("door-zone gate: no HASS_TOKEN, gate stays unsatisfied")
+        return
+    while True:
+        try:
+            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
+                                          ping_interval=30, ping_timeout=60) as ws:
+                msg = _json.loads(await ws.recv())
+                if msg.get('type') != 'auth_required':
+                    raise RuntimeError("HA websocket did not ask for auth: %s" % msg)
+                await ws.send(_json.dumps({'type': 'auth', 'access_token': token}))
+                auth = _json.loads(await ws.recv())
+                if auth.get('type') != 'auth_ok':
+                    raise RuntimeError("HA websocket auth failed: %s" % auth)
+                await ws.send(_json.dumps({'id': 1, 'type': 'subscribe_events', 'event_type': 'state_changed'}))
+                sub = _json.loads(await ws.recv())
+                if not sub.get('success'):
+                    raise RuntimeError("subscribe_events failed: %s" % sub)
+                log.info("door-zone gate subscribed: %s", sensor)
+                while True:
+                    raw = await ws.recv()
+                    try:
+                        m = _json.loads(raw)
+                    except Exception:
+                        continue
+                    if m.get('type') != 'event':
+                        if m.get('type') == 'ping':
+                            await ws.send(_json.dumps({'type': 'pong', 'id': m.get('id')}))
+                        continue
+                    data = m.get('event', {}).get('data', {})
+                    if data.get('entity_id') != sensor:
+                        continue
+                    ns = (data.get('new_state') or {}).get('state')
+                    now = _time.monotonic()
+                    if ns == 'on':
+                        gate.mark_on(now)
+                    else:  # off / unavailable / anything else resets the hold
+                        gate.mark_off(now)
+        except _aio.CancelledError:
+            raise
+        except websockets.ConnectionClosed as e:
+            log.warning("door-zone gate WS dropped (%s); reconnecting in 3s", e)
+            await _aio.sleep(3)
+        except Exception as e:
+            log.error("door-zone gate WS error (%s); reconnecting in 5s", e)
+            await _aio.sleep(5)
+
+
 # ---------------------------------------------------------------- main / CLI
 async def amain(args):
     if args.once:
@@ -555,6 +673,12 @@ async def amain(args):
     personalized = bool(cfg.get('DOORMAN_PERSONALIZED_GREETING', True))
     trigger_mode = str(cfg.get('DOORMAN_TRIGGER_MODE', 'person')).strip().lower()
     doorbell_sensor = cfg.get('DOORMAN_DOORBELL_SENSOR') or 'binary_sensor.doorbell_pressed'
+    gate_entity = (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
+    hold_s = float(cfg.get('DOORMAN_PERSON_HOLD_S', 5.0))
+    gate = None
+    if gate_entity and trigger_mode in ('person', 'hybrid'):
+        gate = DoorZoneGate(gate_entity, hold_s)
+        log.info("door-zone gate active: %s held %.0fs", gate_entity, hold_s)
     log.info("personalized greeting enabled: %s", personalized)
     log.info("trigger mode: %s", trigger_mode)
     log.info("animal behavior: %s", cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice'))
@@ -601,7 +725,11 @@ async def amain(args):
     if trigger_mode in ('doorbell', 'hybrid'):
         tasks.append(doorbell_event_listener(handle_event, sensor=doorbell_sensor))
     if trigger_mode in ('person', 'hybrid'):
-        tasks.append(frigate_event_listener(handle_event, personalized_greeting=personalized))
+        tasks.append(frigate_event_listener(handle_event,
+                                            personalized_greeting=personalized,
+                                            gate=gate))
+    if gate is not None:
+        tasks.append(doorzone_gate_listener(gate, sensor=gate.entity_id))
 
     # one or both listeners run concurrently, feeding the same handle_event
     await asyncio.gather(*tasks)
