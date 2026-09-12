@@ -72,6 +72,11 @@ DEFAULTS = {
     'IDLE_TIMEOUT_S': 25.0,
     'INTERACTION_MAX_S': 120.0,
     'INTERACTION_COOLDOWN_S': 20.0,
+    # Door-zone gate (supplemental, not a trigger): an HA occupancy sensor that
+    # must have been continuously 'on' for DOORMAN_PERSON_HOLD_S seconds before
+    # a Frigate person/face detection may trigger. Empty = gate disabled.
+    'DOORMAN_PERSON_GATE': 'binary_sensor.front_patio_motion_zone_person_occupancy',
+    'DOORMAN_PERSON_HOLD_S': 5.0,
     # snapshots
     'DOORMAN_SNAPSHOT_DIR': '~/doorman/snapshots',
     # keep at most this many recent snapshots in the dir (0 = keep all / no pruning)
@@ -118,6 +123,8 @@ def load():
         'DOORMAN_ANIMAL_MAX_S': 'DOORMAN_ANIMAL_MAX_S',
         'DOORMAN_TRIGGER_MODE': 'DOORMAN_TRIGGER_MODE',
         'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
+        'DOORMAN_PERSON_GATE': 'DOORMAN_PERSON_GATE',
+        'DOORMAN_PERSON_HOLD_S': 'DOORMAN_PERSON_HOLD_S',
         'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
         'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
         'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
@@ -141,7 +148,8 @@ def load():
 
     # normalise numerics / booleans
     for numk in ('MQTT_PORT', 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S',
-                 'INTERACTION_COOLDOWN_S', 'DOORMAN_ANIMAL_MAX_S'):
+                 'INTERACTION_COOLDOWN_S', 'DOORMAN_ANIMAL_MAX_S',
+                 'DOORMAN_PERSON_HOLD_S'):
         try:
             merged[numk] = float(merged[numk]) if numk != 'MQTT_PORT' else int(float(merged[numk]))
             if numk == 'MQTT_PORT':
