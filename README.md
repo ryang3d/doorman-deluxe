@@ -52,6 +52,7 @@ Key options (see `.env.example` for the full list):
 - `DOORMAN_ANIMAL_MAX_S` - hard cap (seconds) on an animal voice session.
 - `DOORMAN_PERSON_GATE` - HA occupancy sensor that must be held `on` for `DOORMAN_PERSON_HOLD_S` seconds before a Frigate person/face trigger fires (default: the front-patio person-occupancy zone on the doorbell cam). Set empty to disable the gate (trigger on first detection).
 - `DOORMAN_PERSON_HOLD_S` - seconds the door-zone gate sensor must stay `on` before a person/face trigger fires (default `5`). Animals and doorbell presses are unaffected.
+- `DOORMAN_IGNORED_FACES` - comma-separated face names to fully ignore (no greeting, no session). Case-insensitive; only applies to the personalized path (`DOORMAN_PERSONALIZED_GREETING=true`) where the recognized name is known. Empty = ignore nobody.
 - `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger, door-zone gate).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.
 - `DOORMAN_SNAPSHOT_RETENTION` - keep at most this many recent local snapshots (0 = keep all / no pruning).
