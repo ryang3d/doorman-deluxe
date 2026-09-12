@@ -719,6 +719,8 @@ async def amain(args):
     # Personalized greeting config: false -> greet immediately (no recognition wait).
     cfg = ab.load_config()
     personalized = bool(cfg.get('DOORMAN_PERSONALIZED_GREETING', True))
+    global IGNORED_FACES
+    IGNORED_FACES = set(cfg.get('DOORMAN_IGNORED_FACES') or set())
     trigger_mode = str(cfg.get('DOORMAN_TRIGGER_MODE', 'person')).strip().lower()
     doorbell_sensor = cfg.get('DOORMAN_DOORBELL_SENSOR') or 'binary_sensor.doorbell_pressed'
     gate_entity = (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
@@ -730,6 +732,7 @@ async def amain(args):
     log.info("personalized greeting enabled: %s", personalized)
     log.info("trigger mode: %s", trigger_mode)
     log.info("animal behavior: %s", cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice'))
+    log.info("ignored faces: %s", sorted(IGNORED_FACES) or '(none)')
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
