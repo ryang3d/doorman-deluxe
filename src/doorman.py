@@ -34,6 +34,7 @@ FRONT_CAMERA = _CFG['FRONT_CAMERA']      # Frigate camera name for the doorbell
 ANIMAL_LABELS = ('cat', 'dog')  # Frigate labels that get the animal reaction
                                 # (short animal-aware greeting, not a full human convo)
 ANIMAL_MAX_S = _CFG['DOORMAN_ANIMAL_MAX_S']  # hard cap on one animal voice session
+IGNORED_FACES = set()  # overridden by amain() from config; recognized names here are fully ignored
 INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
 INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
 IDLE_TIMEOUT_S = _CFG['IDLE_TIMEOUT_S']                     # end interaction after this many idle seconds
@@ -489,6 +490,15 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                 if gate_blocked(label, now):
                     # not settled enough on the gate; do NOT mark triggered -
                     # a later update/end (while held) can still fire this event
+                    continue
+                # Ignored faces: a recognized name on the ignore list gets NO greeting.
+                # p['name'] is known at settle time (recognized, or settled on end/grace).
+                # Mark triggered + drop so no later update/end re-fires. Unrecognized
+                # visitors (p['name'] is None) are unaffected.
+                if p['name'] and p['name'].strip().lower() in IGNORED_FACES:
+                    log.info("ignored face %s at the door; no greeting", p['name'])
+                    p['triggered'] = True
+                    del pending[event_id]
                     continue
                 p['triggered'] = True
                 # fire unless debounced by cooldown
