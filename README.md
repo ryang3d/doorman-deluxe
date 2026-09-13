@@ -31,6 +31,19 @@ own version.
 - Home Assistant (for notify, camera.snapshot, and optional doorbell-press trigger).
 - Google Gemini API key.
 
+### Frigate version requirement
+
+- **Frigate 0.18.0 or newer** (go2rtc 1.9.14+): the talkback WebRTC socket is
+  expected at `ws://<frigate-host>:5001/live/webrtc/api/ws?src=<stream>`.
+- **Frigate 0.17.x only** (go2rtc 1.9.10): the socket lives at
+  `ws://<frigate-host>:5001/api/go2rtc/api/ws?src=<stream>` instead. 0.18.0
+  moved go2rtc behind a separate nginx upstream; the old path now falls
+  through to the Frigate app and returns HTTP 403, so Doorman silently skips
+  every greeting (log: `talkback connect failed after 3 attempts`). To run on
+  0.17.x, change the `ws_url` line in `src/audio_bridge.py` back to the
+  `/api/go2rtc/api/ws` path. No authentication (cookie or token) is needed on
+  either path.
+
 ## Deploy (docker compose, recommended)
 
 1. Install docker + docker compose plugin.
