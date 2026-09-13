@@ -1,5 +1,9 @@
 # Doorman Deluxe
 
+> **Public version:** see `ryang3d/doorman-deluxe` (public). This private repo is the
+> development source of truth; the public repo is a clean, scrubbed export of `main`
+> (no camera password, no test snapshots).
+
 AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker using a Gemini Live two-way voice session, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
 
 Everything runs locally except the voice engine: Frigate (person/face/cat/dog detection + snapshots), go2rtc WebRTC talkback to the doorbell, Home Assistant (doorbell-press trigger, notifications, camera snapshots), and a Gemini Live cloud voice session.
