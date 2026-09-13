@@ -76,7 +76,9 @@ async def inspect_stream(base, cookie_header, name):
 
 async def run(base, cookie, stream, dur, freq, amp):
     wsbase = base.replace('http://','ws://').replace('https://','wss://')
-    ws_url = f"{wsbase}/api/go2rtc/api/ws?src={stream}"   # CONSUMER mode like the browser
+    # Frigate >= 0.18.0 moved the go2rtc WebRTC WS to /live/webrtc/api/ws (old
+    # /api/go2rtc/api/ws now 403s via the Frigate app). No cookie needed.
+    ws_url = f"{wsbase}/live/webrtc/api/ws?src={stream}"   # CONSUMER mode like the browser
 
     cfg = RTCConfiguration(iceServers=[])
     pc = RTCPeerConnection(cfg)

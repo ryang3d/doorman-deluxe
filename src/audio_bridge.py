@@ -702,7 +702,13 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
     """
     base = cfg['FRIGATE_URL'].rstrip('/')
     wsbase = base.replace('http://','ws://').replace('https://','wss://')
-    ws_url = f"{wsbase}/api/go2rtc/api/ws?src={stream}"
+    # Frigate >= 0.18.0 serves go2rtc's WebRTC WS at /live/webrtc/api/ws via its
+    # bundled nginx (go2rtc is now a separate upstream, 127.0.0.1:1984). The older
+    # /api/go2rtc/api/ws path falls through to the Frigate app and 403s. No cookie /
+    # auth header required - verified 2026-09-13 on 0.18.0: full webrtc/offer ->
+    # answer exchange + received-audio (camera backchannel mic) track both succeed
+    # with zero headers.
+    ws_url = f"{wsbase}/live/webrtc/api/ws?src={stream}"
 
     rcfg = RTCConfiguration(iceServers=[])  # critical: no STUN (unreachable -> 0 candidates)
     pc = RTCPeerConnection(rcfg)
