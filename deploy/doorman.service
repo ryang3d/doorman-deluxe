@@ -7,8 +7,9 @@ After=network-online.target
 Type=simple
 # Run the orchestrator (blocks: subscribes to Frigate MQTT, waits for door events).
 # WorkingDirectory must be the src dir so `import audio_bridge` resolves.
-WorkingDirectory=~/doorman/src
-ExecStart=~/doorman/.venv/bin/python ~/doorman/src/doorman.py
+# ($HOME works in systemd USER units; adjust if you install elsewhere.)
+WorkingDirectory=$HOME/doorman/src
+ExecStart=$HOME/doorman/.venv/bin/python $HOME/doorman/src/doorman.py
 # The code logs to stderr/stdout -> journald.
 StandardOutput=journal
 StandardError=journal

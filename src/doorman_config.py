@@ -14,8 +14,10 @@ file/default. Callers use load() once and pass the dict around.
 import os
 
 # Legacy config files this profile used (fallback so bare-metal needs no env).
-PROFILE_ENV = '~/.hermes/profiles/home-admin/.env'
-FRIGATE_ENV = '~/.hermes/profiles/home-admin/frigate.env'
+# Adjust these if your profile / config layout differs; when the files don't
+# exist they are simply skipped (env vars and the defaults below win).
+PROFILE_ENV = os.path.expanduser('~/.hermes/profiles/home-admin/.env')
+FRIGATE_ENV = os.path.expanduser('~/.hermes/profiles/home-admin/frigate.env')
 
 # defaults matching the working deployment (2026-09-08)
 DEFAULTS = {

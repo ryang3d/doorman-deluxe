@@ -7,7 +7,7 @@ Live connection, and native-audio output without needing speech in an input wav.
 import asyncio, os, sys, wave
 
 def load_key():
-    for line in open('~/.hermes/profiles/home-admin/frigate.env'):
+    for line in open(os.path.expanduser('~/.hermes/profiles/home-admin/frigate.env')):
         if line.startswith('GEMINI_API_KEY='):
             return line.split('=',1)[1].strip().strip('"').strip("'")
     return None
@@ -56,13 +56,13 @@ async def main():
 
     print("transcript:", transcripts)
     if audio_out:
-        with open('~/doorman/out.raw','wb') as f:
+        with open(os.path.expanduser('~/doorman/out.raw'),'wb') as f:
             f.write(bytes(audio_out))
         print(f"SAVED {len(audio_out)} bytes -> out.raw")
         # Gemini Live native audio default sample rate is 24kHz pcm16; write wav
         for rate in (24000,16000):
             try:
-                with wave.open('~/doorman/out.wav','wb') as w:
+                with wave.open(os.path.expanduser('~/doorman/out.wav'),'wb') as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
                     w.writeframes(bytes(audio_out))
                 print(f"wrote out.wav at {rate}Hz"); break

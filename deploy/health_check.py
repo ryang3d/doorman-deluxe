@@ -13,7 +13,7 @@ Exit 0 if the critical path is healthy, 1 if not. Prints one line per dependency
 import asyncio, sys, os, json, subprocess
 
 def getenv(path, key):
-    for line in open(path):
+    for line in open(os.path.expanduser(path)):
         line = line.strip()
         if line.startswith(key + '='):
             return line.split('=', 1)[1].strip().strip('"').strip("'")

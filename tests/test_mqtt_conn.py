@@ -7,7 +7,7 @@ import paho.mqtt.client as mqtt
 
 def creds():
     d = {}
-    for line in open('~/.hermes/profiles/home-admin/.env'):
+    for line in open(os.path.expanduser('~/.hermes/profiles/home-admin/.env')):
         line = line.strip()
         if line.startswith(('MQTT_USER=', 'MQTT_PASSWORD=')):
             k, v = line.split('=', 1)

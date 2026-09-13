@@ -7,7 +7,7 @@ audio to the AD410 backchannel by inspecting /api/streams while connected.
 USAGE: python talkback_consumer_diag.py [--dur N] [--freq HZ] [--amp A]
 amp=0 (default) = silent, safe diagnostic.
 """
-import argparse, asyncio, json, logging, sys, math, array
+import argparse, asyncio, json, logging, sys, math, array, os
 import websockets, aiohttp
 from fractions import Fraction
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, RTCConfiguration
@@ -18,7 +18,7 @@ log = logging.getLogger("diag")
 
 def load_creds():
     d = {}
-    for line in open('~/.hermes/profiles/home-admin/frigate.env'):
+    for line in open(os.path.expanduser('~/.hermes/profiles/home-admin/frigate.env')):
         line = line.strip()
         if '=' in line and not line.startswith('#'):
             k, v = line.split('=', 1)

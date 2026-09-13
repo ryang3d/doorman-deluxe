@@ -28,7 +28,7 @@ def _creds():
 
 def _snapshot_dir():
     """Snapshot output dir from config, guaranteed non-None (falls back to project default)."""
-    return _cfg().get('DOORMAN_SNAPSHOT_DIR') or '~/doorman/snapshots'
+    return _cfg().get('DOORMAN_SNAPSHOT_DIR') or os.path.expanduser('~/doorman/snapshots')
 
 
 # ---------------------------------------------------------------- function declarations
