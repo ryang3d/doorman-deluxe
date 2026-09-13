@@ -8,6 +8,13 @@ AI-speaking agentic doorbell for a privacy-focused homelab. When someone approac
 
 Everything runs locally except the voice engine: Frigate (person/face/cat/dog detection + snapshots), go2rtc WebRTC talkback to the doorbell, Home Assistant (doorbell-press trigger, notifications, camera snapshots), and a Gemini Live cloud voice session.
 
+## Origin
+
+Doorman Deluxe implements the privacy-focused, agentic doorbell that Matt Cool described and
+proved out in his own environment. See his write-up:
+[Doorman: A Privacy-Focused Agentic Doorbell](https://mattcool.tech/posts/doorman-a-privacy-focused-agentic-doorbell).
+Thanks to Matt Cool for coming up with the concept and for proving it out.
+
 ## Architecture
 
 - Trigger (configurable): Frigate person/face/cat/dog detection via MQTT, or Home Assistant `binary_sensor.doorbell_pressed` via WebSocket. Cat/dog detections get a configurable animal reaction (playful spoken greeting + notification) instead of a full visitor conversation; see `DOORMAN_ANIMAL_BEHAVIOR`.
