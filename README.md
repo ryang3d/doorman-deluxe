@@ -13,7 +13,8 @@ Everything runs locally except the voice engine: Frigate (person/face/cat/dog de
 Doorman Deluxe implements the privacy-focused, agentic doorbell that Matt Cool described and
 proved out in his own environment. See his write-up:
 [Doorman: A Privacy-Focused Agentic Doorbell](https://mattcool.tech/posts/doorman-a-privacy-focused-agentic-doorbell).
-Thanks to Matt Cool for coming up with the concept and for proving it out.
+Thanks to Matt Cool for coming up with the concept, proving it out, and inspiring me to build my
+own version.
 
 ## Architecture
 
