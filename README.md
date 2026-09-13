@@ -95,3 +95,7 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
   `mosquitto_pub -h <mqtt> -p 1883 -u <user> -P <pass> -t frigate/events -m '{"type":"new","after":{"id":"cat-test-1","camera":"front_doorbell","label":"cat"}}'`
   (Swap `label` to `dog` for a dog. Send a few times to confirm a different greeting line comes out each time.)
 - go2rtc talkback notes and verified transport facts: `TRANSPORT.md`.
+
+## License
+
+MIT, see `LICENSE`.
