@@ -23,31 +23,6 @@ own version.
 - Tools the model can call: snapshot the front door, notify the homeowner.
 - Snapshots in notifications are captured by HA's `camera.snapshot` and served at HA `/local` (no SSH, no extra port).
 
-## Planned features
-
-A living list of features being worked on, roughly ordered by priority and grouped by theme. The first group is the nearest-term.
-
-**Voice & conversation**
-
-- **Local voice engine** - a fully on-LAN voice pipeline (Parakeet STT + local LLM brain + Kokoro TTS) selectable via `DOORMAN_VOICE_ENGINE=local`. Gemini Live stays the default.
-- **Human takeover** - the owner interrupts the AI mid-session and talks to the visitor directly through the doorbell camera; the AI is put on hold and can hand the conversation back.
-- **Barge-in / streaming STT** - let the visitor interrupt a long AI reply, replacing the half-duplex turn loop with streaming recognition to cut per-turn latency.
-- **Multilingual** - English + Spanish first (STT picks the TTS voice); CJK languages pending an ASR that covers them.
-
-**People & policy**
-
-- **Silent note for ignored faces** - an optional HA notification so a fully-ignored face still leaves a record without a spoken greeting.
-- **Pre-recognition ignore gate** - skip an ignored face the moment it is detected instead of after the recognition wait.
-- **Door lock** - recognized face + "open the door" intent + you're home unlocks the entry lock.
-- **Delivery / package mode** - detect a package, frame it in the notification, and offer an optional "leave it with me" flow.
-
-**Ops & visibility**
-
-- **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view.
-- **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
-- **Local recording of interactions** - privacy-gated, off by default.
-- **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
-
 ## Requirements
 
 - Python 3.13 + ffmpeg (bare metal) or Docker + docker compose (recommended).
@@ -145,3 +120,27 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
 ## License
 
 MIT, see `LICENSE`.
+
+## Planned features
+
+A living list of features being worked on, roughly ordered by priority and grouped by theme. The first group is the nearest-term.
+
+### Voice & conversation
+
+- [ ] **Local voice engine** - a fully on-LAN voice pipeline (Parakeet STT + local LLM brain + Kokoro TTS) selectable via `DOORMAN_VOICE_ENGINE=local`. Gemini Live stays the default.
+- [ ] **Human takeover** - the owner interrupts the AI mid-session and talks to the visitor directly through the doorbell camera; the AI is put on hold and can hand the conversation back.
+- [ ] **Barge-in / streaming STT** - let the visitor interrupt a long AI reply, replacing the half-duplex turn loop with streaming recognition to cut per-turn latency.
+
+### People & policy
+
+- [ ] **Silent note for ignored faces** - an optional HA notification so a fully-ignored face still leaves a record without a spoken greeting.
+- [ ] **Pre-recognition ignore gate** - skip an ignored face the moment it is detected instead of after the recognition wait.
+- [ ] **Door lock** - recognized face + "open the door" intent + you're home unlocks the entry lock.
+- [ ] **Delivery / package mode** - detect a package, frame it in the notification, and offer an optional "leave it with me" flow.
+
+### Ops & visibility
+
+- [ ] **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view.
+- [ ] **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
+- [ ] **Local recording of interactions** - privacy-gated, off by default.
+- [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
