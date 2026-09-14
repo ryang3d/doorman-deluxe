@@ -117,10 +117,6 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
   (Swap `label` to `dog` for a dog. Send a few times to confirm a different greeting line comes out each time.)
 - go2rtc talkback notes and verified transport facts: `TRANSPORT.md`.
 
-## License
-
-MIT, see `LICENSE`.
-
 ## Planned features
 
 A living list of features being worked on, roughly ordered by priority and grouped by theme. The first group is the nearest-term.
@@ -144,3 +140,7 @@ A living list of features being worked on, roughly ordered by priority and group
 - [ ] **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
 - [ ] **Local recording of interactions** - privacy-gated, off by default.
 - [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
+
+## License
+
+MIT, see `LICENSE`.
