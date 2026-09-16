@@ -144,6 +144,12 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     idle_timeout_s: if set, end the interaction after this many seconds with no visitor
     speech / AI speech / tool activity (defaults to INTERACTION_MAX_S, i.e. no early cut).
     """
+    if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
+        log.info("voice engine: local")
+        import voice_local as _vl
+        return await _vl.run_interaction_local(system_prompt, trigger_text,
+                                               duration_s=duration_s,
+                                               idle_timeout_s=idle_timeout_s)
     activity = ActivityClock()  # marks visitor/AI/tool activity; idle watchdog reads it
     cfg = ab.load_config()
     audio_q = asyncio.Queue()

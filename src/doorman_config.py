@@ -63,6 +63,37 @@ DEFAULTS = {
     # Gemini Live
     'GEMINI_API_KEY': '',
     'DOORMAN_VOICE': '',          # optional prebuilt voice name
+    # Voice engine selection: 'gemini' (current cloud Live pipeline, DEFAULT,
+    # untouched) or 'local' (Parakeet v3 STT + LLM brain + Chatterbox TTS, all on-LAN).
+    'DOORMAN_VOICE_ENGINE': 'gemini',
+    # Local engine endpoints/params (only used when DOORMAN_VOICE_ENGINE=local).
+    # Brain default: SGLang qwen3.8-27b on the LLM host. Fallback: Ollama on
+    # the doorman host -> set DOORMAN_LLM_BASE_URL=http://127.0.0.1:11434/v1,
+    # DOORMAN_LLM_MODEL=qwen3.5:9b, DOORMAN_LLM_API_KEY='ollama'.
+    'DOORMAN_LLM_BASE_URL': 'http://<llm-host>:30000/v1',  # SGLang (the LLM host)
+    'DOORMAN_LLM_MODEL': 'qwen3.8-27b',
+    'DOORMAN_LLM_API_KEY': '',        # SGLang Bearer key; 'ollama' value for Ollama
+    'DOORMAN_LLM_KEEP_ALIVE': '30m',  # Ollama only (ignored by SGLang, harmless)
+    # TTS = Voicebox (Chatterbox, Ryan's clone). POST {url}/generate, request/response.
+    'DOORMAN_TTS_BASE_URL': 'http://127.0.0.1:17600',        # voicebox host port
+    'DOORMAN_TTS_PROFILE_EN': 'ffadb2a2-cacc-4c7f-8d26-69f7c4c22246',  # 'Ryan G Cloned'
+    'DOORMAN_TTS_PROFILE_ES': 'ffadb2a2-cacc-4c7f-8d26-69f7c4c22246',  # same clone; engine differs
+    'DOORMAN_TTS_ENGINE_EN': 'chatterbox_turbo',              # 2.0s warm, EN
+    'DOORMAN_TTS_ENGINE_ES': 'chatterbox',                    # 4.0s warm, 23 langs incl. es
+    # TTS transport mode: 'voicebox' (default, POST /generate + poll) or 'bare'
+    # (a thin Chatterbox-Turbo service that returns the WAV synchronously, see
+    # Task 3e). 'bare' is the tier-2 swap-in; it skips the poll loop in synthesize().
+    # LOCAL-ENGINE ONLY: DOORMAN_VOICE_ENGINE=gemini ignores this key entirely —
+    # the cloud Live path is byte-for-byte unchanged regardless of this value.
+    'DOORMAN_TTS_MODE': 'voicebox',
+    # STT = standalone Parakeet v3 service we deploy (Task 2).
+    'DOORMAN_STT_BASE_URL': 'http://127.0.0.1:10301',
+    # Keep-warm cadence (seconds). Pings TTS + STT so cold starts (~22s TTS /
+    # ~9s STT) never land on a visitor. 0 on the interval disables the loop.
+    'DOORMAN_KEEP_WARM_SETTLE_S': 30,        # delay before the first warm-up ping
+    'DOORMAN_KEEP_WARM_INTERVAL_S': 1500,    # repeat every 25m while warm
+    'DOORMAN_LOCAL_SILENCE_MS': 700,    # endpoint: silence after speech to finalize
+    'DOORMAN_LOCAL_MIN_SPEECH_MS': 300, # ignore blips shorter than this
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     'DOORMAN_ANIMAL_BEHAVIOR': 'voice',
@@ -134,6 +165,22 @@ def load():
         'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
         'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
         'DOORMAN_MIC_RTSP': 'DOORMAN_MIC_RTSP',
+        'DOORMAN_VOICE_ENGINE': 'DOORMAN_VOICE_ENGINE',
+        'DOORMAN_LLM_BASE_URL': 'DOORMAN_LLM_BASE_URL',
+        'DOORMAN_LLM_MODEL': 'DOORMAN_LLM_MODEL',
+        'DOORMAN_LLM_API_KEY': 'DOORMAN_LLM_API_KEY',
+        'DOORMAN_LLM_KEEP_ALIVE': 'DOORMAN_LLM_KEEP_ALIVE',
+        'DOORMAN_TTS_BASE_URL': 'DOORMAN_TTS_BASE_URL',
+        'DOORMAN_TTS_PROFILE_EN': 'DOORMAN_TTS_PROFILE_EN',
+        'DOORMAN_TTS_PROFILE_ES': 'DOORMAN_TTS_PROFILE_ES',
+        'DOORMAN_TTS_ENGINE_EN': 'DOORMAN_TTS_ENGINE_EN',
+        'DOORMAN_TTS_ENGINE_ES': 'DOORMAN_TTS_ENGINE_ES',
+        'DOORMAN_TTS_MODE': 'DOORMAN_TTS_MODE',
+        'DOORMAN_STT_BASE_URL': 'DOORMAN_STT_BASE_URL',
+        'DOORMAN_KEEP_WARM_SETTLE_S': 'DOORMAN_KEEP_WARM_SETTLE_S',
+        'DOORMAN_KEEP_WARM_INTERVAL_S': 'DOORMAN_KEEP_WARM_INTERVAL_S',
+        'DOORMAN_LOCAL_SILENCE_MS': 'DOORMAN_LOCAL_SILENCE_MS',
+        'DOORMAN_LOCAL_MIN_SPEECH_MS': 'DOORMAN_LOCAL_MIN_SPEECH_MS',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
     }
@@ -159,6 +206,13 @@ def load():
             merged[numk] = float(merged[numk]) if numk != 'MQTT_PORT' else int(float(merged[numk]))
             if numk == 'MQTT_PORT':
                 merged[numk] = int(merged[numk])
+        except (TypeError, ValueError):
+            pass
+    # integer keys (arrive as str from env/files; must be int for sleep()/range())
+    for ink in ('DOORMAN_KEEP_WARM_SETTLE_S', 'DOORMAN_KEEP_WARM_INTERVAL_S',
+                'DOORMAN_LOCAL_SILENCE_MS', 'DOORMAN_LOCAL_MIN_SPEECH_MS'):
+        try:
+            merged[ink] = int(float(merged[ink]))
         except (TypeError, ValueError):
             pass
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
