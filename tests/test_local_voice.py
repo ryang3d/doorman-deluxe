@@ -83,6 +83,111 @@ def test_tool_schema():
     names = sorted(t['function']['name'] for t in s)
     check("tools", names, ['notify_ryan', 'snapshot_front_door'])
 
+# ---------------------------------------------------------------- HTTP-level stub tests
+import json, threading, http.server, asyncio
+
+class _Stub(http.server.BaseHTTPRequestHandler):
+    kind = 'generic'
+    def log_message(self, *a): pass
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+        if self.kind == 'llm':
+            # first call: request a tool; second call: final answer
+            if not hasattr(_Stub, '_n'): _Stub._n = 0
+            _Stub._n += 1
+            if _Stub._n == 1:
+                msg = {'role': 'assistant', 'content': None,
+                       'tool_calls': [{'id': 'c1', 'type': 'function',
+                                        'function': {'name': 'notify_ryan',
+                                                     'arguments': '{"message": "x"}'}}]}
+            else:
+                msg = {'role': 'assistant', 'content': 'Package noted.'}
+            out = json.dumps({'choices': [{'message': msg}]}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(out))); self.end_headers()
+            self.wfile.write(out)
+        elif self.kind == 'stt':
+            out = json.dumps({'text': 'hi', 'language': 'es', 'seconds': 0.1}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(out))); self.end_headers()
+            self.wfile.write(out)
+        elif self.kind == 'tts':
+            # voicebox /generate: async queue; returns a generation record
+            out = json.dumps({'id': 'stubgen1', 'status': 'generating',
+                              'text': json.loads(body).get('text', '')}).encode()
+            self.send_response(200); self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(out))); self.end_headers()
+            self.wfile.write(out)
+    def do_GET(self):
+        if self.kind == 'tts':
+            # /generate/<id>/status: SSE with a completed record
+            out = ('data: {"id": "stubgen1", "status": "completed", '
+                   '"duration": 1.0, "error": null}').encode()
+            # /audio/<id>: 1s of 24k s16le wav
+            import wave as _w, io as _io
+            buf = _io.BytesIO()
+            with _w.open(buf, 'wb') as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+                w.writeframes(b'\x00\x01' * 24000)   # 1 s
+            audio = buf.getvalue()
+            if self.path.startswith('/generate/'):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(out))); self.end_headers()
+                self.wfile.write(out)
+            elif self.path.startswith('/audio/'):
+                self.send_response(200); self.send_header('Content-Type', 'audio/wav')
+                self.send_header('Content-Length', str(len(audio))); self.end_headers()
+                self.wfile.write(audio)
+            else:
+                self.send_response(404); self.end_headers()
+        else:
+            self.send_response(404); self.end_headers()
+
+def _start_stub(kind, port):
+    h = type('H', (_Stub,), {'kind': kind})
+    srv = http.server.HTTPServer(('127.0.0.1', port), h)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+def test_clients():
+    import voice_local as vl
+    import doorman_tools
+    async def fake_notify(message, cfg=None, image_path=None):
+        return True, 'notification sent'
+    _orig = doorman_tools.notify_ryan
+    doorman_tools.notify_ryan = fake_notify
+    cfg = {'DOORMAN_STT_BASE_URL': 'http://127.0.0.1:18301',
+           'DOORMAN_TTS_BASE_URL': 'http://127.0.0.1:18880',
+           'DOORMAN_LLM_BASE_URL': 'http://127.0.0.1:18134',
+           'DOORMAN_LLM_MODEL': 'stub', 'DOORMAN_LLM_KEEP_ALIVE': '5m',
+           'DOORMAN_TTS_PROFILE_EN': 'enpid', 'DOORMAN_TTS_PROFILE_ES': 'espid',
+           'DOORMAN_TTS_ENGINE_EN': 'chatterbox_turbo', 'DOORMAN_TTS_ENGINE_ES': 'chatterbox'}
+    srvs = [_start_stub('stt', 18301), _start_stub('tts', 18880), _start_stub('llm', 18134)]
+    try:
+        async def main():
+            stt = await vl.transcribe_utterance(b'\x00\x00' * 480, cfg)
+            check("stt text", stt['text'], 'hi')
+            check("stt lang", stt['language'], 'es')
+            q = asyncio.Queue()
+            class FakeSpeaking:
+                _lang = ''
+                async def mark_active(self): pass
+            sp = FakeSpeaking()
+            sp._lang = stt['language']           # es -> multilingual engine
+            n = await vl.synthesize('hola', cfg, q, sp)
+            check("tts queued bytes", n > 0, True)
+            _Stub._n = 0
+            txt, hist = await vl.brain_turn('sys', [], 'there is a package', cfg)
+            check("brain final", txt, 'Package noted.')
+            check("brain hist has tool result",
+                  any(m.get('role') == 'tool' for m in hist), True)
+        asyncio.run(main())
+    finally:
+        doorman_tools.notify_ryan = _orig
+        for s in srvs: s.shutdown()
+
 def main():
     cfg = dc.load()
     check("engine default gemini", cfg.get('DOORMAN_VOICE_ENGINE'), 'gemini')
@@ -98,6 +203,7 @@ def main():
     test_endpointer()
     test_voice_map()
     test_tool_schema()
+    test_clients()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         sys.exit(1)
