@@ -50,9 +50,10 @@ class UtteranceEndpointer:
     All methods are sync; caller runs inside an async task at 30 ms cadence.
     """
 
-    def __init__(self, silence_ms=700, min_speech_ms=300, preres_ms=300):
+    def __init__(self, silence_ms=700, min_speech_ms=300, preres_ms=300,
+                 aggressiveness=3):
         import webrtcvad
-        self.vad = webrtcvad.Vad(3)   # 0-3 aggressiveness; 3 = drop non-speech hard
+        self.vad = webrtcvad.Vad(aggressiveness)  # 0-3; 3 = drop non-speech hard
         self.silence_ms = int(silence_ms)
         self.min_speech_ms = int(min_speech_ms)
         self.frames = []              # ring of (frame_bytes, is_speech, muted)
@@ -145,8 +146,13 @@ def local_system_prompt(base_prompt: str) -> str:
     return base_prompt + (
         "\n\nLOCAL-PIPELINE NOTES: You are now spoken by a local text-to-speech engine. "
         "Keep replies short: one or two sentences, no lists, no markdown. Reply in the "
-        "same language the visitor uses (English or Spanish). When a tool is available "
-        "and the situation calls for it, call the tool FIRST, then say one short line.")
+        "same language the visitor uses (English or Spanish). "
+        "TOOLS ARE OPTIONAL: for a plain greeting just speak it directly - do NOT call "
+        "snapshot_front_door or notify_ryan first; that only adds delay before the visitor "
+        "hears you. Use snapshot_front_door only when you genuinely need to look (the "
+        "visitor asks who is there, or you must see something you cannot). Use "
+        "notify_ryan only for a package, issue, or urgent report worth pinging the "
+        "homeowner about. When you do call a tool, call it once, then say one short line.")
 
 
 # ---------------------------------------------------------------- HTTP clients
@@ -382,7 +388,9 @@ async def run_interaction_local(system_prompt, trigger_text,
     speaking = ab.SpeakingState()
     ep = UtteranceEndpointer(
         silence_ms=int(cfg.get('DOORMAN_LOCAL_SILENCE_MS', 700)),
-        min_speech_ms=int(cfg.get('DOORMAN_LOCAL_MIN_SPEECH_MS', 300)))
+        min_speech_ms=int(cfg.get('DOORMAN_LOCAL_MIN_SPEECH_MS', 300)),
+        aggressiveness=int(cfg.get('DOORMAN_LOCAL_VAD_AGGRESSIVENESS', 2)))
+    mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 40.0))
     history = []
 
     async def mic_loop():
@@ -393,8 +401,8 @@ async def run_interaction_local(system_prompt, trigger_text,
             log.warning("local mic: no DOORMAN_MIC_RTSP/CAM_MIC_RTSP configured; mic disabled")
             return
         t_open = time.monotonic()
-        log.info("local mic: opening RTSP source %s", (mic_rtsp or '').split('@')[-1])
-        proc = await ab.open_mic_ffmpeg(mic_rtsp)
+        log.info("local mic: opening RTSP source %s (gain=%.0fx)", (mic_rtsp or '').split('@')[-1], mic_gain)
+        proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain)
         if proc is None:
             log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - t_open)
             return

@@ -218,19 +218,27 @@ def _detect_audio_args(content_type: str, head: bytes) -> list:
     return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
 
 
-async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3):
+async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None):
     """Open the visitor-mic RTSP via ffmpeg -> 16k s16le on stdout, with the proven
     3x probe-retry (go2rtc cold sources deliver no data briefly). Returns the
-    subprocess or None."""
+    subprocess or None.
+
+    gain: optional linear volume multiplier applied in ffmpeg (e.g. 40.0 = ~32 dB).
+    The doorbell mic is very quiet (ambient ~RMS 8 of 32768); without gain the
+    VAD/STT barely register a speaker. None = no gain (Gemini path unchanged)."""
+    args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-rtsp_transport', 'tcp',
+            '-i', mic_rtsp,
+            '-vn', '-map', '0:a:0']
+    if gain:
+        args += ['-af', 'volume=%s' % gain]
+    args += ['-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+            '-f', 's16le', 'pipe:1']
     proc = None
     for attempt in range(1, attempts + 1):
         try:
             proc = await asyncio.create_subprocess_exec(
-                'ffmpeg', '-hide_banner', '-loglevel', 'error',
-                '-rtsp_transport', 'tcp',
-                '-i', mic_rtsp,
-                '-vn', '-map', '0:a:0', '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                '-f', 's16le', 'pipe:1',
+                *args,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             probe = await asyncio.wait_for(proc.stdout.read(4), timeout=probe_timeout)
             if probe:

@@ -94,6 +94,14 @@ DEFAULTS = {
     'DOORMAN_KEEP_WARM_INTERVAL_S': 1500,    # repeat every 25m while warm
     'DOORMAN_LOCAL_SILENCE_MS': 700,    # endpoint: silence after speech to finalize
     'DOORMAN_LOCAL_MIN_SPEECH_MS': 300, # ignore blips shorter than this
+    # VAD aggressiveness (webrtcvad, 0-3; 3 = most aggressive, drops non-speech hard).
+    # The doorbell mic is quiet; 3 was too strict in the 2026-09-17 live test (30 s of
+    # talk flagged only 7 frames). 2 is the typical default and catches quiet speech.
+    'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 2,
+    # Mic gain (linear multiplier, applied in ffmpeg -af volume=). The door mic
+    # ambient level is ~RMS 8 of 32768, so 40 (~32 dB) brings quiet speech into
+    # the VAD/STT sweet spot. 1.0 = no gain. LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_MIC_GAIN': 40.0,
     # Parakeet v3 transcribes multilingual audio but does NOT label the language on
     # its Hypothesis result (confirmed 2026-09-16: EncDecRNNTBPEModel has no
     # language field), so the STT 'language' value is always empty. This key sets
@@ -189,6 +197,8 @@ def load():
         'DOORMAN_KEEP_WARM_INTERVAL_S': 'DOORMAN_KEEP_WARM_INTERVAL_S',
         'DOORMAN_LOCAL_SILENCE_MS': 'DOORMAN_LOCAL_SILENCE_MS',
         'DOORMAN_LOCAL_MIN_SPEECH_MS': 'DOORMAN_LOCAL_MIN_SPEECH_MS',
+        'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
+        'DOORMAN_LOCAL_MIC_GAIN': 'DOORMAN_LOCAL_MIC_GAIN',
         'DOORMAN_LOCAL_LANG_FALLBACK': 'DOORMAN_LOCAL_LANG_FALLBACK',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
