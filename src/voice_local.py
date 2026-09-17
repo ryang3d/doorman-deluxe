@@ -51,13 +51,20 @@ class UtteranceEndpointer:
     """
 
     def __init__(self, silence_ms=700, min_speech_ms=300, preres_ms=300,
-                 aggressiveness=3):
+                 aggressiveness=3, max_ring_ms=10000, min_rms=500.0):
         import webrtcvad
         self.vad = webrtcvad.Vad(aggressiveness)  # 0-3; 3 = drop non-speech hard
         self.silence_ms = int(silence_ms)
         self.min_speech_ms = int(min_speech_ms)
+        self.min_rms = float(min_rms)
+        # Ring must hold a full utterance (up to ~10 s) so it is NOT truncated to
+        # its last ~390 ms. The old keep=silence+preres+100 (~1.1 s) chopped every
+        # utterance to its tail word, which is why STT only heard "Yeah."/"Oh."
+        # on the live door mic. 10 s ring + 48 KB/frame is ~480 KB, cheap in RAM.
+        ring_from_silence = max(silence_ms + preres_ms + 100, 0) // VAD_FRAME_MS + 1
+        self.keep_frames = max(ring_from_silence,
+                               int(max_ring_ms) // VAD_FRAME_MS + 1)
         self.frames = []              # ring of (frame_bytes, is_speech, muted)
-        self.keep_frames = max(silence_ms + preres_ms + 100, 0) // VAD_FRAME_MS + 1
         self._speech_total = 0        # cumulative count of non-muted speech frames (VAD)
 
     def speech_frame_count(self):
@@ -84,25 +91,25 @@ class UtteranceEndpointer:
             self.frames = self.frames[-self.keep_frames:]
         return self._check_endpoint()
 
-    # Tolerated gap inside a voice burst (brief dip below VAD threshold, e.g. a
-    # between-words pause that is still part of the same utterance). Isolated
-    # ambient-noise frames on the door mic are separated by far more than this,
-    # so they stay their own (too-short) segments and never trigger an endpoint.
-    VOICE_GAP_MS = 100
+    # Tolerated gap inside a voice burst. A between-words pause in a normal
+    # sentence is ~150-300 ms, so 300 ms keeps a whole sentence/utterance as one
+    # segment without merging two separate turns. Isolated ambient-noise frames
+    # are separated by far more, so they stay their own (too-short) segments.
+    VOICE_GAP_MS = 300
 
     def _check_endpoint(self):
-        """Fire when the most recent UNMUTED voice segment is >= min_speech_ms and
-        >= silence_ms has elapsed since its last frame.
+        """Fire when the most recent UNMUTED voice segment is >= min_speech_ms,
+        has mean RMS >= min_rms, and >= silence_ms has elapsed since its last frame.
 
-        2026-09-17 rewrite (live door-mic testing): the previous two-scan ring
-        approach required a contiguous clean-silence tail, which never assembles
-        on the noisy door mic (sporadic VAD false-positives keep resetting it) —
-        30 s of talk produced 94 flagged frames but no endpoint. This version
-        instead finds the most recent contiguous voice *segment* (allowing up to
-        VOICE_GAP_MS dips between frames) and fires on real-time silence after it.
-        Isolated ambient-noise frames stay their own 1-frame segments, which never
-        reach min_speech_ms, so they don't fire on their own and don't merge into
-        the visitor's utterance.
+        2026-09-17 rewrite (live door-mic testing). Two findings drove the changes:
+        (1) the ring was only ~1.1 s, so it truncated every utterance to its last
+        ~390 ms -> STT only heard the tail word ("Yeah." / "Oh."). The ring is now
+        ~10 s so a full utterance survives.
+        (2) the door mic's ambient noise still flags as VAD "speech" at level 2
+        (RMS ~300-400) even though it is far quieter than real voice (RMS 9000+).
+        So a segment only counts if its mean RMS >= min_rms (default 500): real
+        voice passes, ambient noise blips do not. This is what makes the endpointer
+        stop firing on the 390 ms noise blips and instead fire on your actual words.
         """
         n = len(self.frames)
         if n < 2:
@@ -130,12 +137,25 @@ class UtteranceEndpointer:
                     seg_start = seg_end = i
                 else:
                     seg_end = i
-        # close the trailing (possibly still-open) segment if it's long enough
+        # close the trailing (possibly still-open) segment if it's long enough AND
+        # it is the most recent long-enough segment (don't overwrite a good
+        # segment with a trailing too-short noise blip).
         if seg_start is not None and (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
             last_good = (seg_start, seg_end)
         if last_good is None:
             return None
         seg_start, seg_end = last_good
+        # RMS gate: the door mic's ambient false-positives are quiet (RMS ~300-400);
+        # real voice is loud (RMS 9000+). A segment below min_rms is a noise blip.
+        seg_bytes = b''.join(fr for fr, _, _ in self.frames[seg_start:seg_end + 1])
+        try:
+            import numpy as _np
+            a = _np.frombuffer(seg_bytes, dtype=_np.int16).astype(_np.float64)
+            seg_rms = float(_np.sqrt(_np.mean(a ** 2))) if a.size else 0.0
+        except Exception:
+            seg_rms = 0.0
+        if seg_rms < self.min_rms:
+            return None
         # time since that segment's last frame
         tail_ms = (n - 1 - seg_end) * VAD_FRAME_MS
         if tail_ms < self.silence_ms:
@@ -429,7 +449,9 @@ async def run_interaction_local(system_prompt, trigger_text,
     ep = UtteranceEndpointer(
         silence_ms=int(cfg.get('DOORMAN_LOCAL_SILENCE_MS', 700)),
         min_speech_ms=int(cfg.get('DOORMAN_LOCAL_MIN_SPEECH_MS', 300)),
-        aggressiveness=int(cfg.get('DOORMAN_LOCAL_VAD_AGGRESSIVENESS', 2)))
+        aggressiveness=int(cfg.get('DOORMAN_LOCAL_VAD_AGGRESSIVENESS', 2)),
+        max_ring_ms=int(cfg.get('DOORMAN_LOCAL_MAX_RING_MS', 10000)),
+        min_rms=float(cfg.get('DOORMAN_LOCAL_MIN_RMS', 500)))
     mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 40.0))
     history = []
 

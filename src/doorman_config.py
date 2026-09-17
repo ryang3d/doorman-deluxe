@@ -106,6 +106,14 @@ DEFAULTS = {
     # that WAV file for each local interaction, so mic tuning can be done
     # offline against real door audio. Empty = no capture. LOCAL ENGINE ONLY.
     'DOORMAN_LOCAL_DEBUG_CAPTURE': '',
+    # Endpoint ring size (ms). Must hold a FULL utterance (~10 s) so it is not
+    # truncated to its last ~390 ms (the old ~1.1 s ring chopped every utterance
+    # to its tail word -> STT only heard "Yeah."/"Oh."). LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_MAX_RING_MS': 10000,
+    # Minimum mean RMS for a VAD-flagged segment to count as voice. The door
+    # mic's ambient false-positives are RMS ~300-400; real voice is RMS 9000+.
+    # 500 sits between, so noise blips don't fire the endpointer. LOCAL ONLY.
+    'DOORMAN_LOCAL_MIN_RMS': 500.0,
     # Parakeet v3 transcribes multilingual audio but does NOT label the language on
     # its Hypothesis result (confirmed 2026-09-16: EncDecRNNTBPEModel has no
     # language field), so the STT 'language' value is always empty. This key sets
@@ -204,6 +212,8 @@ def load():
         'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
         'DOORMAN_LOCAL_MIC_GAIN': 'DOORMAN_LOCAL_MIC_GAIN',
         'DOORMAN_LOCAL_DEBUG_CAPTURE': 'DOORMAN_LOCAL_DEBUG_CAPTURE',
+        'DOORMAN_LOCAL_MAX_RING_MS': 'DOORMAN_LOCAL_MAX_RING_MS',
+        'DOORMAN_LOCAL_MIN_RMS': 'DOORMAN_LOCAL_MIN_RMS',
         'DOORMAN_LOCAL_LANG_FALLBACK': 'DOORMAN_LOCAL_LANG_FALLBACK',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
@@ -234,9 +244,16 @@ def load():
             pass
     # integer keys (arrive as str from env/files; must be int for sleep()/range())
     for ink in ('DOORMAN_KEEP_WARM_SETTLE_S', 'DOORMAN_KEEP_WARM_INTERVAL_S',
-                'DOORMAN_LOCAL_SILENCE_MS', 'DOORMAN_LOCAL_MIN_SPEECH_MS'):
+                'DOORMAN_LOCAL_SILENCE_MS', 'DOORMAN_LOCAL_MIN_SPEECH_MS',
+                'DOORMAN_LOCAL_MAX_RING_MS'):
         try:
             merged[ink] = int(float(merged[ink]))
+        except (TypeError, ValueError):
+            pass
+    # float keys that arrive as str from env/files
+    for fltk in ('DOORMAN_LOCAL_MIC_GAIN', 'DOORMAN_LOCAL_MIN_RMS'):
+        try:
+            merged[fltk] = float(merged[fltk])
         except (TypeError, ValueError):
             pass
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(

@@ -64,39 +64,42 @@ def test_endpointer():
 
 def test_endpointer_noise_tolerance():
     import voice_local as vl
-    # Live door-mic behaviour (2026-09-17): sporadic VAD false-positives (ambient
-    # noise) punctuate the silence tail, so the old strict contiguous-silence
-    # endpointer never fired even when 94 frames of the visitor's voice were
-    # flagged. The segment-based endpointer must still fire when a real voice
-    # burst is followed by a tail containing isolated noise blips.
-    #
-    # Geometry that keeps the blips from merging into the voice: gap_frames =
-    # VOICE_GAP_MS // 30 = 3, so a blip must be >= 4 frames from the previous
-    # speech frame to start its own (too-short) segment.
-    ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=150, preres_ms=300)
-    assert ep.keep_frames == 24
-    noise = _speech_frames(1, off=2)   # a VAD-speech frame standing in for ambient noise
-    out = None
-    for _ in range(5): out = ep.push_frame(SIL, muted=False)
-    voice = _speech_frames(5)          # 150 ms real speech (= min_speech)
-    for f in voice: out = ep.push_frame(f, muted=False)
-    # tail: 18 frames. Two isolated noise blips, each >= 4 frames from the
-    # previous speech frame so each stays its own too-short segment.
-    tail = [SIL]*4 + [noise[0]] + [SIL]*8 + [noise[0]] + [SIL]*5
-    for fr in tail:
-        out = ep.push_frame(fr, muted=False)
-        if out:
-            break
-    assert out is not None, "noise-tolerant endpoint missed (real voice + scattered noise)"
-    # control: only scattered noise, no real voice burst -> must NOT fire
+    # Live door-mic behaviour (2026-09-17): the endpointer must fire on a real
+    # voice segment and NOT on a too-short ambient-noise blip. We build the ring
+    # flags directly (bypassing VAD) so the segment logic is tested deterministically.
+    ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
+    ep.keep_frames = 334
+    FB = vl.VAD_FRAME_BYTES
+    FR = b'\x00' * FB
+    S = _speech_frames(1, off=3)[0]   # a loud real 30 ms speech frame (RMS ~7800 > min_rms 500)
+    # 1) A real 300 ms voice segment (10 frames of actual audio) followed by 300
+    #    ms silence -> must fire.
+    ep.frames = [(S, 1, 0)] * 10 + [(FR, 0, 0)] * 10
+    out = ep._check_endpoint()
+    assert out is not None and len(out) >= 10 * FB, "real voice segment must fire"
+    # 2) A single 90 ms noise blip (3 frames) followed by silence -> must NOT fire
+    #    (segment too short: 90 ms < min_speech_ms 300 ms). Uses a real-audio
+    #    frame flagged as speech (simulates a VAD false-positive on ambient noise
+    #    that's loud enough to pass the RMS gate; the segment-length rule catches it).
     ep2 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
-    out2 = None
-    for _ in range(7): out2 = ep2.push_frame(SIL, muted=False)
-    for fr in tail:
-        out2 = ep2.push_frame(fr, muted=False)
-        if out2:
-            break
-    assert out2 is None, "scattered noise alone must not endpoint"
+    ep2.keep_frames = 334
+    ep2.frames = [(FR, 0, 0)] * 5 + [(S, 1, 0)] * 3 + [(FR, 0, 0)] * 20
+    assert ep2._check_endpoint() is None, "short noise blip must not fire"
+    # 3) A real voice segment (10 frames of actual audio, 300 ms) then a short
+    #    isolated noise blip (3 frames) 12 frames later, then 300 ms silence ->
+    #    must fire on the VOICE. The blip is its own too-short segment, so the
+    #    endpointer picks the voice segment.
+    ep3 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
+    ep3.keep_frames = 334
+    ep3.frames = ([(FR, 0, 0)] * 5          # idle
+                  + [(S, 1, 0)] * 10        # real voice (300 ms, high RMS)
+                  + [(FR, 0, 0)] * 12       # gap > VOICE_GAP_MS
+                  + [(S, 1, 0)] * 3         # isolated noise blip (90 ms)
+                  + [(FR, 0, 0)] * 12)      # trailing silence >= 300 ms
+    out3 = ep3._check_endpoint()
+    assert out3 is not None, "real voice must fire despite a later noise blip"
+    # The utterance should span the voice segment (+preroll), not the noise blip.
+    assert len(out3) < 25 * FB, "utterance must not swallow the isolated noise blip"
     check("endpointer_noise_tolerance", "ok", "ok")
 
 def test_voice_map():
