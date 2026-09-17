@@ -454,7 +454,7 @@ async def run_interaction_local(system_prompt, trigger_text,
                 if not data:
                     break
                 if _cap:
-                    try: _cap.write(data)
+                    try: _cap.writeframes(data)
                     except Exception: pass
                 _now = time.monotonic()
                 if _now - _last_data_t > 2.0:
