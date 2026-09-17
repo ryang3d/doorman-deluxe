@@ -18,23 +18,17 @@ def check(name, got, want):
 SIL = b'\x00' * 960            # 30 ms of 16k s16le silence
 
 def _speech_frames(n=6, off=0):
-    """Return `n` consecutive 30 ms (480-sample) 16k s16le frames of REAL speech,
-    resampled 24k->16k from the repo's out.wav fixture. Real speech flags as
-    `is_speech` in webrtcvad reliably; a synthetic tone (even a 440 Hz sine) sits
-    right at the VAD's frequency/energy boundary and only half-flags, which is why
-    the original plan's square-wave _tone missed the endpoint (2026-09-16)."""
+    """Return `n` consecutive 30 ms (480-sample / 960-byte) 16k s16le frames of
+    REAL speech, read from the tracked tests/fixtures/speech_16k.wav fixture.
+    Real speech flags as `is_speech` in webrtcvad reliably; a synthetic tone
+    (even a 440 Hz sine) sits right at the VAD's frequency/energy boundary and
+    only half-flags, which is why the original plan's square-wave _tone missed
+    the endpoint (2026-09-16)."""
     import wave
-    import numpy as np
-    repo = os.path.join(_here, '..')
-    path = os.path.join(repo, 'out.wav')
+    path = os.path.join(_here, 'fixtures', 'speech_16k.wav')
     with wave.open(path) as w:
         raw = w.readframes(w.getnframes())
-    pcm24 = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-    # resample 24k -> 16k, snapped to a multiple of 480 (one 30 ms frame)
-    n16 = (len(pcm24) * 16000 // 24000) // 480 * 480
-    idx = np.linspace(0, len(pcm24) - 1, n16)
-    pcm16 = np.interp(idx, np.arange(len(pcm24)), pcm24).astype(np.int16)
-    return [pcm16[(off + i) * 480:(off + i + 1) * 480].tobytes() for i in range(n)]
+    return [raw[(off + i) * 960:(off + i + 1) * 960] for i in range(n)]
 
 def test_endpointer():
     import voice_local as vl
