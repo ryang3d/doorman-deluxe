@@ -104,6 +104,15 @@ class SpeakingState:
         async with self.lock:
             self._active = False
 
+    async def end_speech(self):
+        """Local-engine path: called once the AI's queued TTS has finished PLAYING.
+        Reset the sticky active flag and refresh the last-active timestamp to now,
+        so the tail window (echo gate) starts from playback end, not queue time.
+        The Gemini path uses mark_active/mark_idle in its receive loop instead."""
+        async with self.lock:
+            self._active = False
+            self._last_active = __import__('time').monotonic()
+
     async def muted(self):
         """True if mic should be muted (AI speaking now or within tail window)."""
         import time

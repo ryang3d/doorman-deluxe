@@ -304,6 +304,18 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
         for i in range(0, len(pcm) - len(pcm) % chunk, chunk):
             audio_q.put_nowait(pcm[i:i + chunk])
         await speaking.mark_active()
+        # The local path has no receive-loop to clear the sticky active flag, so
+        # schedule it at playback end: pcm is 24k s16le, paced in real time
+        # downstream (aiortc emits one 20 ms frame per 20 ms of wall clock).
+        play_s = len(pcm) / (24000 * 2)
+        async def _release_echo_gate():
+            try:
+                await asyncio.sleep(play_s + 0.5)
+                await speaking.end_speech()
+                log.info("local: echo gate released after %.1fs playback", play_s)
+            except Exception:
+                pass
+        asyncio.get_event_loop().create_task(_release_echo_gate())
         if activity:
             await activity.mark()
     log.info("tts: queued %d bytes for %d chars (engine=%s)",
