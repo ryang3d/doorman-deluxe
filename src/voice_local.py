@@ -546,7 +546,6 @@ async def run_interaction_local(system_prompt, trigger_text,
             except Exception: pass
 
     async def handle_utterance(pcm16: bytes):
-        await activity.mark()
         log.info("local: endpoint, %d ms of audio", len(pcm16) // (SAMPLE_RATE // 500))
         try:
             stt = await transcribe_utterance(pcm16, cfg)
@@ -557,6 +556,12 @@ async def run_interaction_local(system_prompt, trigger_text,
         if not text:
             log.info("local stt: silence/empty")
             return
+        # Real visitor audio only: mark activity AFTER the empty check, so ambient
+        # noise that the endpointer flags but STT reads as silence does NOT reset
+        # the idle clock. (2026-09-17: a person interaction rode its full 120 s
+        # max because every 4-9 s of door noise kept marking activity, and the
+        # next dog trigger was stuck behind it for 22 s.)
+        await activity.mark()
         # Parakeet v3 does NOT label the language (its NeMo Hypothesis has no
         # language field — confirmed 2026-09-16), so STT 'language' is always
         # empty. The language is taken from DOORMAN_LOCAL_LANG_FALLBACK
