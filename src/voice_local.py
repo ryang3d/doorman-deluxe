@@ -321,7 +321,10 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
     pcm = _wav_to_pcm16(wav)
     if pcm:
         chunk = 24000 * 2  # 1 s of 24k s16le per queue item; pacing is downstream
-        for i in range(0, len(pcm) - len(pcm) % chunk, chunk):
+        # range(0, len, chunk) — NOT len - len%chunk: the remainder (up to ~1 s)
+        # must be queued too, or every reply loses its final word
+        # (2026-09-17: 10-16% of each doorman reply was being dropped).
+        for i in range(0, len(pcm), chunk):
             audio_q.put_nowait(pcm[i:i + chunk])
         await speaking.mark_active()
         # The local path has no receive-loop to clear the sticky active flag, so
