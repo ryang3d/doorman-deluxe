@@ -15,5 +15,28 @@ services:
       # must match the mounted volume path
       DOORMAN_SNAPSHOT_DIR: /snapshots
 
+  # Standalone Parakeet TDT 0.6B v3 STT (Task 2). POST /transcribe on 10301.
+  # network_mode: host so the doorman container reaches it at 127.0.0.1:10301.
+  parakeet:
+    image: doorman-parakeet:local
+    build:
+      context: .
+      dockerfile: deploy/parakeet.Dockerfile
+    container_name: parakeet-stt
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PARAKEET_MODEL: nvidia/parakeet-tdt-0.6b-v3
+    volumes:
+      - parakeet_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
 volumes:
   doorman_snapshots:
+  parakeet_models:
