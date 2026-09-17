@@ -380,16 +380,26 @@ async def run_interaction_local(system_prompt, trigger_text,
         """Same ffmpeg RTSP open + probe + retry as ab.mic_to_gemini, but frames feed
         the endpointer instead of a Gemini session."""
         mic_rtsp = cfg.get('DOORMAN_MIC_RTSP') or cfg.get('CAM_MIC_RTSP')
+        if not mic_rtsp:
+            log.warning("local mic: no DOORMAN_MIC_RTSP/CAM_MIC_RTSP configured; mic disabled")
+            return
+        t_open = time.monotonic()
+        log.info("local mic: opening RTSP source %s", (mic_rtsp or '').split('@')[-1])
         proc = await ab.open_mic_ffmpeg(mic_rtsp)
         if proc is None:
-            log.warning("local mic: RTSP audio failed to open")
+            log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - t_open)
             return
+        log.info("local mic: RTSP audio open after %.1fs", time.monotonic() - t_open)
         acc = bytearray()
+        _seen_data = 0
         try:
             while not stop_ev.is_set():
                 data = await proc.stdout.read(3200)
                 if not data:
                     break
+                _seen_data += len(data)
+                if _seen_data in (3200, 32000, 100000, 300000):
+                    log.info("local mic: audio flowing (%d bytes total)", _seen_data)
                 acc += data
                 while len(acc) >= VAD_FRAME_BYTES:
                     frame = bytes(acc[:VAD_FRAME_BYTES])
@@ -462,11 +472,18 @@ async def run_interaction_local(system_prompt, trigger_text,
         log.warning("local prime failed: %s", e)
 
     # --- watchdog + teardown: IDENTICAL structure to the gemini path ---
-    import time
     interaction_start = time.monotonic()
+    # Grace window: don't count idle for the first few seconds so the cold
+    # ffmpeg mic open + talkback settle + the visitor's first words don't race
+    # the idle timer. The gemini path doesn't need this (it rides the already-
+    # connected WebRTC track); the local path opens a separate RTSP stream.
+    grace_s = min(float(cfg.get('DOORMAN_LOCAL_MIC_GRACE_S', 10.0)), duration_s - 5.0)
     try:
         if idle_timeout_s:
             while not stop_ev.is_set():
+                if time.monotonic() - interaction_start < grace_s:
+                    await asyncio.sleep(0.5)
+                    continue
                 idle = await activity.idle_seconds()
                 if idle >= idle_timeout_s:
                     log.info("idle for %.0fs >= %ss, ending local interaction",
@@ -482,7 +499,7 @@ async def run_interaction_local(system_prompt, trigger_text,
     log.info("ending local interaction")
     mic_task.cancel()
     try:
-        await asyncio.wait_for(mic_task, timeout=2)
+        await asyncio.wait_for(asyncio.gather(mic_task, return_exceptions=True), timeout=2)
     except Exception:
         pass
     try:
@@ -498,7 +515,7 @@ async def run_interaction_local(system_prompt, trigger_text,
     await asyncio.sleep(0.8)
     keep_task.cancel()
     try:
-        await asyncio.wait_for(keep_task, timeout=1)
+        await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
     except Exception:
         pass
     try:
