@@ -11,6 +11,7 @@ services:
       - .env
     volumes:
       - doorman_snapshots:/snapshots
+      - ./tmp:/tmp  # debug captures (DOORMAN_LOCAL_DEBUG_CAPTURE)
     environment:
       # must match the mounted volume path
       DOORMAN_SNAPSHOT_DIR: /snapshots

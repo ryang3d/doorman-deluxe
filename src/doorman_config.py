@@ -102,6 +102,10 @@ DEFAULTS = {
     # ambient level is ~RMS 8 of 32768, so 40 (~32 dB) brings quiet speech into
     # the VAD/STT sweet spot. 1.0 = no gain. LOCAL ENGINE ONLY.
     'DOORMAN_LOCAL_MIC_GAIN': 40.0,
+    # Debug: when set to a path, the raw (gained) mic stream is also written to
+    # that WAV file for each local interaction, so mic tuning can be done
+    # offline against real door audio. Empty = no capture. LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_DEBUG_CAPTURE': '',
     # Parakeet v3 transcribes multilingual audio but does NOT label the language on
     # its Hypothesis result (confirmed 2026-09-16: EncDecRNNTBPEModel has no
     # language field), so the STT 'language' value is always empty. This key sets
@@ -199,6 +203,7 @@ def load():
         'DOORMAN_LOCAL_MIN_SPEECH_MS': 'DOORMAN_LOCAL_MIN_SPEECH_MS',
         'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
         'DOORMAN_LOCAL_MIC_GAIN': 'DOORMAN_LOCAL_MIC_GAIN',
+        'DOORMAN_LOCAL_DEBUG_CAPTURE': 'DOORMAN_LOCAL_DEBUG_CAPTURE',
         'DOORMAN_LOCAL_LANG_FALLBACK': 'DOORMAN_LOCAL_LANG_FALLBACK',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',

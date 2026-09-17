@@ -84,39 +84,67 @@ class UtteranceEndpointer:
             self.frames = self.frames[-self.keep_frames:]
         return self._check_endpoint()
 
+    # Tolerated gap inside a voice burst (brief dip below VAD threshold, e.g. a
+    # between-words pause that is still part of the same utterance). Isolated
+    # ambient-noise frames on the door mic are separated by far more than this,
+    # so they stay their own (too-short) segments and never trigger an endpoint.
+    VOICE_GAP_MS = 100
+
     def _check_endpoint(self):
-        """Find the most recent: contiguous voice >= min_speech followed by contiguous
-        silence >= silence_ms (both in the UNMUTED region after the voice burst)."""
+        """Fire when the most recent UNMUTED voice segment is >= min_speech_ms and
+        >= silence_ms has elapsed since its last frame.
+
+        2026-09-17 rewrite (live door-mic testing): the previous two-scan ring
+        approach required a contiguous clean-silence tail, which never assembles
+        on the noisy door mic (sporadic VAD false-positives keep resetting it) —
+        30 s of talk produced 94 flagged frames but no endpoint. This version
+        instead finds the most recent contiguous voice *segment* (allowing up to
+        VOICE_GAP_MS dips between frames) and fires on real-time silence after it.
+        Isolated ambient-noise frames stay their own 1-frame segments, which never
+        reach min_speech_ms, so they don't fire on their own and don't merge into
+        the visitor's utterance.
+        """
         n = len(self.frames)
-        if n < (self.silence_ms + self.min_speech_ms) // VAD_FRAME_MS:
+        if n < 2:
             return None
-        # scan backwards from the newest frame for the end-silence run
-        i = n - 1
-        silence = 0
-        while i >= 0:
+        # Forward scan tracking the most recent UNMUTED voice *segment* that
+        # reached min_speech_ms. Segments are delimited by gaps > VOICE_GAP_MS,
+        # by muted (echo-gate) frames, or by end-of-ring. Isolated ambient-noise
+        # frames stay their own too-short segments and never become the answer.
+        gap_frames = max(1, self.VOICE_GAP_MS // VAD_FRAME_MS)
+        last_good = None                 # (start, end) of most recent long-enough segment
+        seg_start = seg_end = None
+        for i in range(n):
             fr, sp, muted = self.frames[i]
-            if muted or sp:
-                break
-            silence += VAD_FRAME_MS
-            i -= 1
-        if silence < self.silence_ms:
+            if muted:
+                # echo-gate region resets the current segment
+                seg_start = seg_end = None
+                continue
+            if sp:
+                if seg_start is None:
+                    seg_start = seg_end = i
+                elif i - seg_end > gap_frames:
+                    # gap too big -> previous segment closed; record it if long enough
+                    if (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
+                        last_good = (seg_start, seg_end)
+                    seg_start = seg_end = i
+                else:
+                    seg_end = i
+        # close the trailing (possibly still-open) segment if it's long enough
+        if seg_start is not None and (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
+            last_good = (seg_start, seg_end)
+        if last_good is None:
             return None
-        j = i
-        voice = 0
-        while j >= 0:
-            fr, sp, muted = self.frames[j]
-            if muted or not sp:
-                break
-            voice += VAD_FRAME_MS
-            j -= 1
-        if voice < self.min_speech_ms:
+        seg_start, seg_end = last_good
+        # time since that segment's last frame
+        tail_ms = (n - 1 - seg_end) * VAD_FRAME_MS
+        if tail_ms < self.silence_ms:
             return None
-        # utterance = from 300 ms before the voice start through the voice end.
-        start = j
-        preres = self.frames[start - 10:start] if start >= 10 else self.frames[:start]
-        end = i + 1
+        # utterance = from just before the segment start through its end.
+        start = max(0, seg_start - 10)
+        end = seg_end + 1
         utter = b''.join(fr for fr, _, _ in self.frames[start:end])
-        self.frames = self.frames[end:]   # consume; keep post-end silence for pre-roll
+        self.frames = self.frames[end:]   # consume; keep post-end tail for next
         return utter or None
 
     def flush(self):
@@ -407,6 +435,13 @@ async def run_interaction_local(system_prompt, trigger_text,
             log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - t_open)
             return
         log.info("local mic: RTSP audio open after %.1fs", time.monotonic() - t_open)
+        _cap = None
+        _cap_env = cfg.get('DOORMAN_LOCAL_DEBUG_CAPTURE')
+        if _cap_env:
+            import wave as _wave
+            _cap = _wave.open(_cap_env, 'wb')
+            _cap.setnchannels(1); _cap.setsampwidth(2); _cap.setframerate(SAMPLE_RATE)
+            log.info("local mic: capturing to %s", _cap_env)
         acc = bytearray()
         _seen_data = 0
         _next_report = 50000          # log at >=50KB, then every 50KB
@@ -418,6 +453,9 @@ async def run_interaction_local(system_prompt, trigger_text,
                 data = await proc.stdout.read(3200)
                 if not data:
                     break
+                if _cap:
+                    try: _cap.write(data)
+                    except Exception: pass
                 _now = time.monotonic()
                 if _now - _last_data_t > 2.0:
                     log.warning("local mic: STALLED %.1fs with no audio data (total %d bytes)",
@@ -448,6 +486,9 @@ async def run_interaction_local(system_prompt, trigger_text,
         except asyncio.CancelledError:
             pass
         finally:
+            if _cap:
+                try: _cap.close()
+                except Exception: pass
             try: proc.kill()
             except Exception: pass
 

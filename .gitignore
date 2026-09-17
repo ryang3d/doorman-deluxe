@@ -12,3 +12,4 @@ out.wav
 
 # door snapshots (test artifacts)
 snapshots/
+tmp/
