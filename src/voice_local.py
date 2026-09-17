@@ -452,7 +452,13 @@ async def run_interaction_local(system_prompt, trigger_text,
         aggressiveness=int(cfg.get('DOORMAN_LOCAL_VAD_AGGRESSIVENESS', 2)),
         max_ring_ms=int(cfg.get('DOORMAN_LOCAL_MAX_RING_MS', 10000)),
         min_rms=float(cfg.get('DOORMAN_LOCAL_MIN_RMS', 500)))
-    mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 40.0))
+    # Gain multiplier on the doorbell mic RTSP. The raw doorbell signal is very
+    # quiet (peak ~800/32768, RMS ~170). 40x pushed loud visitor speech to the
+    # int16 ceiling (~peak 32767) so parakeet heard clipping -> 'silence/empty'.
+    # 10x keeps loud speech at peak ~8200 (75% headroom, no clip) while quiet
+    # ambient stays ~RMS 1700, well above the VAD/RMS threshold. Tunable via
+    # DOORMAN_LOCAL_MIC_GAIN; verify against real door audio if you change it.
+    mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 10.0))
     history = []
 
     async def mic_loop():
