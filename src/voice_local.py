@@ -57,6 +57,13 @@ class UtteranceEndpointer:
         self.min_speech_ms = int(min_speech_ms)
         self.frames = []              # ring of (frame_bytes, is_speech, muted)
         self.keep_frames = max(silence_ms + preres_ms + 100, 0) // VAD_FRAME_MS + 1
+        self._speech_total = 0        # cumulative count of non-muted speech frames (VAD)
+
+    def speech_frame_count(self):
+        """Cumulative number of non-muted frames the VAD flagged as speech.
+        Diagnostics only: if this stays 0 while audio is flowing, the VAD
+        aggressiveness / mic level / signal is the problem."""
+        return self._speech_total
 
     def push_frame(self, frame: bytes, muted: bool):
         """One 30 ms frame. Returns the utterance bytes (s16le 16k) when an endpoint
@@ -69,6 +76,8 @@ class UtteranceEndpointer:
             speech = (not muted) and self.vad.is_speech(frame, SAMPLE_RATE)
         except Exception:
             speech = False
+        if speech:
+            self._speech_total += 1
         self.frames.append((frame, speech, muted))
         if len(self.frames) > self.keep_frames:
             self.frames = self.frames[-self.keep_frames:]
@@ -392,14 +401,32 @@ async def run_interaction_local(system_prompt, trigger_text,
         log.info("local mic: RTSP audio open after %.1fs", time.monotonic() - t_open)
         acc = bytearray()
         _seen_data = 0
+        _next_report = 50000          # log at >=50KB, then every 50KB
+        _last_data_t = time.monotonic()
+        _first_data_logged = False
+        _speech_reported = -10.0
         try:
             while not stop_ev.is_set():
                 data = await proc.stdout.read(3200)
                 if not data:
                     break
+                _now = time.monotonic()
+                if _now - _last_data_t > 2.0:
+                    log.warning("local mic: STALLED %.1fs with no audio data (total %d bytes)",
+                                _now - _last_data_t, _seen_data)
+                _last_data_t = _now
+                if not _first_data_logged:
+                    log.info("local mic: first audio data after %.1fs", _now - t_open)
+                    _first_data_logged = True
                 _seen_data += len(data)
-                if _seen_data in (3200, 32000, 100000, 300000):
+                if _seen_data >= _next_report:
                     log.info("local mic: audio flowing (%d bytes total)", _seen_data)
+                    _next_report += 50000
+                # VAD-level visibility: has the endpointer seen any speech frames?
+                sp_frames = ep.speech_frame_count()
+                if sp_frames > 0 and _now - _speech_reported > 5.0:
+                    log.info("local mic: VAD flagged speech in %d frames so far", sp_frames)
+                    _speech_reported = _now
                 acc += data
                 while len(acc) >= VAD_FRAME_BYTES:
                     frame = bytes(acc[:VAD_FRAME_BYTES])
