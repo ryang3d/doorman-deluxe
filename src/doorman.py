@@ -405,7 +405,10 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
     import time
     # state: event_id -> {'new_ts': monotonic, 'recognized': name-or-None, 'triggered': bool}
     pending = {}
-    RECOGNIZE_GRACE_S = 25.0   # how long to wait for recognition after 'new'
+    # How long to wait for Frigate face recognition after a person is detected,
+    # before triggering as an unknown visitor. Configurable via
+    # DOORMAN_RECOGNIZE_GRACE_S (default 12 s; was hardcoded 25 s).
+    RECOGNIZE_GRACE_S = _dc.load().get('DOORMAN_RECOGNIZE_GRACE_S', 12.0)
     last_trigger_ts = 0.0
     fast_fired = set()   # fast-path event_ids already triggered (person/face hold re-checks on updates)
 

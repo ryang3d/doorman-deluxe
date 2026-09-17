@@ -138,6 +138,13 @@ DEFAULTS = {
     # a Frigate person/face detection may trigger. Empty = gate disabled.
     'DOORMAN_PERSON_GATE': 'binary_sensor.front_patio_motion_zone_person_occupancy',
     'DOORMAN_PERSON_HOLD_S': 5.0,
+    # How long to wait for Frigate face recognition after a person is detected,
+    # before triggering as an unknown visitor. Frigate only lands a sub_label on
+    # a minority of front-door events (stationary person -> soft face crop), so a
+    # long wait mostly wastes time. 12 s is a good default: if recognition lands
+    # it's usually within ~5-10 s; otherwise the doorman greets as an unknown.
+    # Re-checks every 5 s (ticker), so effective worst case is ~grace + 5 s.
+    'DOORMAN_RECOGNIZE_GRACE_S': 12.0,
     # comma-separated Frigate face names to fully ignore (no greeting). Case-insensitive,
     # matched against the recognized sub_label name. Empty = ignore nobody.
     'DOORMAN_IGNORED_FACES': '',
@@ -189,6 +196,7 @@ def load():
         'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
         'DOORMAN_PERSON_GATE': 'DOORMAN_PERSON_GATE',
         'DOORMAN_PERSON_HOLD_S': 'DOORMAN_PERSON_HOLD_S',
+        'DOORMAN_RECOGNIZE_GRACE_S': 'DOORMAN_RECOGNIZE_GRACE_S',
         'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
         'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
         'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
@@ -251,7 +259,8 @@ def load():
         except (TypeError, ValueError):
             pass
     # float keys that arrive as str from env/files
-    for fltk in ('DOORMAN_LOCAL_MIC_GAIN', 'DOORMAN_LOCAL_MIN_RMS'):
+    for fltk in ('DOORMAN_LOCAL_MIC_GAIN', 'DOORMAN_LOCAL_MIN_RMS',
+                 'DOORMAN_RECOGNIZE_GRACE_S'):
         try:
             merged[fltk] = float(merged[fltk])
         except (TypeError, ValueError):

@@ -25,6 +25,7 @@ def test_defaults_when_unset():
     # hardcoded default is used when nothing overrides it
     assert cfg['INTERACTION_COOLDOWN_S'] == 20.0, cfg['INTERACTION_COOLDOWN_S']
     assert cfg['DOORMAN_SNAPSHOT_DIR'].endswith('snapshots')
+    assert cfg['DOORMAN_RECOGNIZE_GRACE_S'] == 12.0, cfg['DOORMAN_RECOGNIZE_GRACE_S']
     print("PASS defaults fallback")
 
 
