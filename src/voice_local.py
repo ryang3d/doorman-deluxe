@@ -334,3 +334,175 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
                              'content': json.dumps({'ok': ok, 'value': val})})
             new_msgs.append(messages[-1])
     raise RuntimeError('brain: too many tool rounds')
+
+
+# ---------------------------------------------------------------- full interaction
+async def run_interaction_local(system_prompt, trigger_text,
+                                duration_s=120.0, idle_timeout_s=None):
+    """Local-engine door interaction. Reuses the proven talkback WebRTC transport and
+    teardown from audio_bridge; replaces the Gemini Live loop with:
+    mic(ffmpeg RTSP) -> webrtcvad endpointer -> parakeet STT (3080 Ti, language
+    detection) -> LLM brain (SGLang qwen3.8-27b on the LLM host, +tools) ->
+    voicebox/Chatterbox TTS (Ryan G clone) -> audio_q -> GeminiAudioTrack ->
+    go2rtc -> doorbell speaker. TTS engine follows the STT-detected language:
+    EN -> chatterbox_turbo (clone), ES/other -> chatterbox multilingual."""
+    import asyncio
+    import audio_bridge as ab
+    cfg = load_cfg()
+    import doorman as _d   # ActivityClock lives there; avoid import cycle at module top
+    activity = _d.ActivityClock()
+    audio_q = asyncio.Queue()
+    stop_ev = asyncio.Event()
+    sysp = local_system_prompt(system_prompt)
+
+    # --- talkback connect (retry loop IDENTICAL to gemini path) ---
+    pc = ws = mic = keep_task = recv_holder = None
+    for attempt in range(3):
+        try:
+            pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
+            break
+        except Exception as e:
+            log.warning("local talkback attempt %d/3 failed: %s", attempt + 1,
+                        (str(e).splitlines()[0] if str(e) else e)[:120])
+            if attempt < 2:
+                await asyncio.sleep(8.0)
+    if ws is None:
+        log.error("local talkback connect failed after 3 attempts")
+        return 2
+
+    speaking = ab.SpeakingState()
+    ep = UtteranceEndpointer(
+        silence_ms=int(cfg.get('DOORMAN_LOCAL_SILENCE_MS', 700)),
+        min_speech_ms=int(cfg.get('DOORMAN_LOCAL_MIN_SPEECH_MS', 300)))
+    history = []
+
+    async def mic_loop():
+        """Same ffmpeg RTSP open + probe + retry as ab.mic_to_gemini, but frames feed
+        the endpointer instead of a Gemini session."""
+        mic_rtsp = cfg.get('DOORMAN_MIC_RTSP') or cfg.get('CAM_MIC_RTSP')
+        proc = await ab.open_mic_ffmpeg(mic_rtsp)
+        if proc is None:
+            log.warning("local mic: RTSP audio failed to open")
+            return
+        acc = bytearray()
+        try:
+            while not stop_ev.is_set():
+                data = await proc.stdout.read(3200)
+                if not data:
+                    break
+                acc += data
+                while len(acc) >= VAD_FRAME_BYTES:
+                    frame = bytes(acc[:VAD_FRAME_BYTES])
+                    del acc[:VAD_FRAME_BYTES]
+                    if await speaking.muted():
+                        ep.push_frame(frame, muted=True)
+                        continue
+                    utter = ep.push_frame(frame, muted=False)
+                    if utter:
+                        await handle_utterance(utter)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try: proc.kill()
+            except Exception: pass
+
+    async def handle_utterance(pcm16: bytes):
+        await activity.mark()
+        log.info("local: endpoint, %d ms of audio", len(pcm16) // (SAMPLE_RATE // 500))
+        try:
+            stt = await transcribe_utterance(pcm16, cfg)
+        except Exception as e:
+            log.warning("local stt failed: %s", e)
+            return
+        text = (stt.get('text') or '').strip()
+        if not text:
+            log.info("local stt: silence/empty")
+            return
+        # Parakeet v3 does NOT label the language (its NeMo Hypothesis has no
+        # language field — confirmed 2026-09-16), so STT 'language' is always
+        # empty. The language is taken from DOORMAN_LOCAL_LANG_FALLBACK
+        # ('auto' -> 'en' engine default; 'es' -> 'es' engine for an all-Spanish
+        # household). Per-utterance switching needs a language detector
+        # (out of scope for the 2-language scope).
+        lang = (stt.get('language') or '').strip() \
+               or (cfg.get('DOORMAN_LOCAL_LANG_FALLBACK', 'auto') or 'en')
+        if lang.lower() in ('auto', 'default'):
+            lang = 'en'
+        speaking._lang = lang            # TTS engine follows the chosen language
+        log.info("[visitor said] %s (%s)", text, lang)
+        try:
+            reply, new_hist = await brain_turn(sysp, history, text, cfg,
+                                               activity=activity)
+            history.extend(new_hist)
+            if len(history) > 24:      # cap: keep the recent window
+                del history[:-24]
+        except Exception as e:
+            log.warning("local brain failed: %s", e)
+            return
+        if not reply:
+            return
+        log.info("[doorman said] %s", reply[:120])
+        try:
+            await synthesize(reply, cfg, audio_q, speaking, activity=activity)
+        except Exception as e:
+            log.warning("local tts failed: %s", e)
+
+    mic_task = asyncio.create_task(mic_loop())
+    log.info("local interaction starting (max %ss): %s",
+             duration_s, trigger_text[:80])
+    # Prime: the trigger text IS the first brain user turn (greeting). EN clone.
+    speaking._lang = 'en'
+    try:
+        reply, new_hist = await brain_turn(sysp, history, trigger_text, cfg,
+                                           activity=activity)
+        history.extend(new_hist)
+        if reply:
+            await synthesize(reply, cfg, audio_q, speaking, activity=activity)
+    except Exception as e:
+        log.warning("local prime failed: %s", e)
+
+    # --- watchdog + teardown: IDENTICAL structure to the gemini path ---
+    import time
+    interaction_start = time.monotonic()
+    try:
+        if idle_timeout_s:
+            while not stop_ev.is_set():
+                idle = await activity.idle_seconds()
+                if idle >= idle_timeout_s:
+                    log.info("idle for %.0fs >= %ss, ending local interaction",
+                             idle, idle_timeout_s)
+                    break
+                if (time.monotonic() - interaction_start) >= duration_s:
+                    break
+                await asyncio.sleep(0.5)
+        else:
+            await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+    except asyncio.TimeoutError:
+        pass
+    log.info("ending local interaction")
+    mic_task.cancel()
+    try:
+        await asyncio.wait_for(mic_task, timeout=2)
+    except Exception:
+        pass
+    try:
+        end = asyncio.get_event_loop().time() + 0.3
+        while asyncio.get_event_loop().time() < end:
+            await asyncio.sleep(0.02)
+    except Exception:
+        pass
+    try:
+        await pc.close()
+    except Exception:
+        pass
+    await asyncio.sleep(0.8)
+    keep_task.cancel()
+    try:
+        await asyncio.wait_for(keep_task, timeout=1)
+    except Exception:
+        pass
+    try:
+        await ws.close()
+    except Exception:
+        pass
+    return 0
