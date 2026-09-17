@@ -5,4 +5,4 @@ numpy==2.5.3
 aiohttp==3.14.3
 websockets==16.1.1
 paho-mqtt==2.1.0
-webrtcvad-wheels==2.0.10.post2
+webrtcvad-wheels==2.0.14
