@@ -368,11 +368,21 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
             'messages': messages,
             'tools': openai_tools_schema(),
             'tool_choice': 'auto',
-            'max_tokens': 300,
+            'max_tokens': int(cfg.get('DOORMAN_LLM_MAX_TOKENS', 400)),
+            'temperature': float(cfg.get('DOORMAN_LLM_TEMPERATURE', 0.8)),
+            'top_p': 0.9,
             'stream': False,
             # 'options' (think/keep_alive) is Ollama-only; SGLang ignores unknown
             # top-level keys, so send it only for the Ollama fallback.
         }
+        # qwen3 thinking chain: the Spark brain reasons BEFORE replying. With the
+        # think chain on, a 300-token budget is eaten by reasoning -> empty spoken
+        # reply (verified 2026-09-17: 13s, finish_reason=length, content=''). Off:
+        # 1-5s, natural, tool-calling intact. SGLang exposes this via
+        # chat_template_kwargs; the Ollama path uses options.think below.
+        if cfg.get('DOORMAN_LLM_API_KEY') != 'ollama':
+            payload['chat_template_kwargs'] = {
+                'enable_thinking': bool(cfg.get('DOORMAN_LLM_THINK', False))}
         if (cfg.get('DOORMAN_LLM_API_KEY') or '') == 'ollama':
             payload['options'] = {'think': False,
                                   'keep_alive': cfg.get('DOORMAN_LLM_KEEP_ALIVE', '30m')}

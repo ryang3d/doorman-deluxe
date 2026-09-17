@@ -74,6 +74,15 @@ DEFAULTS = {
     'DOORMAN_LLM_MODEL': 'qwen3.8-27b',
     'DOORMAN_LLM_API_KEY': '',        # SGLang Bearer key; 'ollama' value for Ollama
     'DOORMAN_LLM_KEEP_ALIVE': '30m',  # Ollama only (ignored by SGLang, harmless)
+    # The Spark brain is a qwen3 thinking model. Its reasoning chain consumes the
+    # token budget BEFORE the spoken reply: at max_tokens=300 the production
+    # config hit finish_reason=length with EMPTY content (13s, no words). With
+    # thinking off the same model answers in 1-5s. 2026-09-17: 'liked the
+    # responses from Gemini a lot better' = this, plus sampling at temp 0 (the
+    # model's formulaic default) -> set temp 0.8 for naturalness.
+    'DOORMAN_LLM_TEMPERATURE': 0.8,   # sampling temperature for the spoken reply
+    'DOORMAN_LLM_MAX_TOKENS': 400,    # reply budget (thinking off => ample)
+    'DOORMAN_LLM_THINK': False,       # qwen3 think chain; off for snappy door replies
     # TTS = Voicebox (Chatterbox, Ryan's clone). POST {url}/generate, request/response.
     'DOORMAN_TTS_BASE_URL': 'http://127.0.0.1:17600',        # voicebox host port
     'DOORMAN_TTS_PROFILE_EN': 'ffadb2a2-cacc-4c7f-8d26-69f7c4c22246',  # 'Ryan G Cloned'
@@ -206,6 +215,9 @@ def load():
         'DOORMAN_LLM_MODEL': 'DOORMAN_LLM_MODEL',
         'DOORMAN_LLM_API_KEY': 'DOORMAN_LLM_API_KEY',
         'DOORMAN_LLM_KEEP_ALIVE': 'DOORMAN_LLM_KEEP_ALIVE',
+        'DOORMAN_LLM_TEMPERATURE': 'DOORMAN_LLM_TEMPERATURE',
+        'DOORMAN_LLM_MAX_TOKENS': 'DOORMAN_LLM_MAX_TOKENS',
+        'DOORMAN_LLM_THINK': 'DOORMAN_LLM_THINK',
         'DOORMAN_TTS_BASE_URL': 'DOORMAN_TTS_BASE_URL',
         'DOORMAN_TTS_PROFILE_EN': 'DOORMAN_TTS_PROFILE_EN',
         'DOORMAN_TTS_PROFILE_ES': 'DOORMAN_TTS_PROFILE_ES',
@@ -260,11 +272,19 @@ def load():
             pass
     # float keys that arrive as str from env/files
     for fltk in ('DOORMAN_LOCAL_MIC_GAIN', 'DOORMAN_LOCAL_MIN_RMS',
-                 'DOORMAN_RECOGNIZE_GRACE_S'):
+                 'DOORMAN_RECOGNIZE_GRACE_S', 'DOORMAN_LLM_TEMPERATURE'):
         try:
             merged[fltk] = float(merged[fltk])
         except (TypeError, ValueError):
             pass
+    # LLM max_tokens: int
+    try:
+        merged['DOORMAN_LLM_MAX_TOKENS'] = int(merged['DOORMAN_LLM_MAX_TOKENS'])
+    except (TypeError, ValueError):
+        pass
+    # LLM think chain: bool (qwen3 thinking; off = snappy spoken replies)
+    merged['DOORMAN_LLM_THINK'] = str(
+        merged['DOORMAN_LLM_THINK']).strip().lower() in ('true', '1', 'yes', 'on')
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
     # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.
