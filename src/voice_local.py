@@ -503,10 +503,13 @@ async def run_interaction_local(system_prompt, trigger_text,
     # Gain multiplier on the doorbell mic RTSP. The raw doorbell signal is very
     # quiet (peak ~800/32768, RMS ~170). 40x pushed loud visitor speech to the
     # int16 ceiling (~peak 32767) so parakeet heard clipping -> 'silence/empty'.
-    # 10x keeps loud speech at peak ~8200 (75% headroom, no clip) while quiet
-    # ambient stays ~RMS 1700, well above the VAD/RMS threshold. Tunable via
-    # DOORMAN_LOCAL_MIC_GAIN; verify against real door audio if you change it.
+    # 10x was tuned to quiet ambient, but a visitor talking CLOSE to the doorbell
+    # still drives the substream to the int16 ceiling at 10x (verified 2026-09-18:
+    # whole capture pinned at 32767, parakeet mangled 'I have a delivery' into
+    # 'I haven't delivered'). The limiter caps the peak (~0.95) instead of
+    # hard-clipping, while leaving quiet voices / ambient untouched.
     mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 10.0))
+    mic_limiter = str(cfg.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
     history = []
 
     async def mic_loop():
@@ -517,8 +520,9 @@ async def run_interaction_local(system_prompt, trigger_text,
             log.warning("local mic: no DOORMAN_MIC_RTSP/CAM_MIC_RTSP configured; mic disabled")
             return
         t_open = time.monotonic()
-        log.info("local mic: opening RTSP source %s (gain=%.0fx)", (mic_rtsp or '').split('@')[-1], mic_gain)
-        proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain)
+        log.info("local mic: opening RTSP source %s (gain=%.0fx limiter=%s)",
+                 (mic_rtsp or '').split('@')[-1], mic_gain, mic_limiter)
+        proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain, limiter=mic_limiter)
         if proc is None:
             log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - t_open)
             return

@@ -227,20 +227,30 @@ def _detect_audio_args(content_type: str, head: bytes) -> list:
     return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
 
 
-async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None):
+async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None, limiter=False):
     """Open the visitor-mic RTSP via ffmpeg -> 16k s16le on stdout, with the proven
     3x probe-retry (go2rtc cold sources deliver no data briefly). Returns the
     subprocess or None.
 
     gain: optional linear volume multiplier applied in ffmpeg (e.g. 40.0 = ~32 dB).
     The doorbell mic is very quiet (ambient ~RMS 8 of 32768); without gain the
-    VAD/STT barely register a speaker. None = no gain (Gemini path unchanged)."""
+    VAD/STT barely register a speaker. None = no gain (Gemini path unchanged).
+    limiter: if True (and gain is set), append a fast alimiter after the volume so
+    loud door voices are capped instead of hard-clipping at the int16 ceiling.
+    A visitor talking close to the doorbell drives the raw substream to the
+    int16 ceiling at 10x gain, which parakeet then mangles ('I have a delivery'
+    -> 'I haven't delivered'). The limiter caps the peak (~0.95) while leaving
+    quiet voices and ambient untouched. Verified on the live substream:
+    volume=10 alone -> peak 32767 (CLIPS); +alimiter -> peak ~31130 (capped)."""
     args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
             '-rtsp_transport', 'tcp',
             '-i', mic_rtsp,
             '-vn', '-map', '0:a:0']
     if gain:
-        args += ['-af', 'volume=%s' % gain]
+        af = 'volume=%s' % gain
+        if limiter:
+            af += ',alimiter=limit=0.95:attack=5:release=50:level=false'
+        args += ['-af', af]
     args += ['-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
             '-f', 's16le', 'pipe:1']
     proc = None

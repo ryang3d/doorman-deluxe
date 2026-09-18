@@ -111,6 +111,12 @@ DEFAULTS = {
     # ambient level is ~RMS 8 of 32768, so 40 (~32 dB) brings quiet speech into
     # the VAD/STT sweet spot. 1.0 = no gain. LOCAL ENGINE ONLY.
     'DOORMAN_LOCAL_MIC_GAIN': 40.0,
+    # Fast alimiter after the gain filter so a visitor talking close to the
+    # doorbell is capped instead of hard-clipping at the int16 ceiling. A close
+    # voice drives the substream to 32767 at 10x gain, which parakeet mangles
+    # ('I have a delivery' -> 'I haven't delivered'). limit=0.95, 5ms attack.
+    # Only applies to the LOCAL engine mic (gain>0). 'false' to disable.
+    'DOORMAN_LOCAL_MIC_LIMITER': True,
     # Debug: when set to a path, the raw (gained) mic stream is also written to
     # that WAV file for each local interaction, so mic tuning can be done
     # offline against real door audio. Empty = no capture. LOCAL ENGINE ONLY.
@@ -231,6 +237,7 @@ def load():
         'DOORMAN_LOCAL_MIN_SPEECH_MS': 'DOORMAN_LOCAL_MIN_SPEECH_MS',
         'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
         'DOORMAN_LOCAL_MIC_GAIN': 'DOORMAN_LOCAL_MIC_GAIN',
+        'DOORMAN_LOCAL_MIC_LIMITER': 'DOORMAN_LOCAL_MIC_LIMITER',
         'DOORMAN_LOCAL_DEBUG_CAPTURE': 'DOORMAN_LOCAL_DEBUG_CAPTURE',
         'DOORMAN_LOCAL_MAX_RING_MS': 'DOORMAN_LOCAL_MAX_RING_MS',
         'DOORMAN_LOCAL_MIN_RMS': 'DOORMAN_LOCAL_MIN_RMS',
@@ -285,6 +292,9 @@ def load():
     # LLM think chain: bool (qwen3 thinking; off = snappy spoken replies)
     merged['DOORMAN_LLM_THINK'] = str(
         merged['DOORMAN_LLM_THINK']).strip().lower() in ('true', '1', 'yes', 'on')
+    # Local-mic limiter: bool (caps close-voice peaks instead of hard-clipping)
+    merged['DOORMAN_LOCAL_MIC_LIMITER'] = str(
+        merged.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
     # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.
