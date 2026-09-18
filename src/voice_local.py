@@ -361,7 +361,7 @@ def _claims_notification(text: str) -> bool:
                 ('resident', 'homeowner', 'home owner', 'owner',
                  'the house', 'the homeowner'))
     verb = any(w in t for w in
-               ('know', 'notif', 'alert', 'told', 'sent', 'gave'))
+               ('know', 'notif', 'alert', 'told', 'tell', 'sent', 'gave'))
     return owner and verb
 
 
