@@ -391,12 +391,29 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         except Exception:
             pass
 
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        # Fresh connect (rc=0). MUST re-subscribe here: Paho auto-reconnects the
+        # TCP socket after a network blip (e.g. 2026-09-18 10:01 HA-box outage
+        # dropped the broker link silently), but with a clean session the broker
+        # forgets the subscription and Paho does NOT re-subscribe on its own.
+        # Without this, every Frigate event after any blip is delivered to no one
+        # and the doorman goes deaf (observed: 4 person events 08:02-08:08 UTC,
+        # zero 'person seen' log lines).
+        if reason_code == 0:
+            client.subscribe(FRIGATE_TOPIC)
+            log.info("mqtt connected, (re)subscribed to %s", FRIGATE_TOPIC)
+
+    def on_disconnect(client, userdata, flags, reason_code, properties=None):
+        log.warning("mqtt disconnected (rc=%s); auto-reconnect will re-subscribe", reason_code)
+
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(user, pw)
     client.on_message = on_message
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.subscribe(FRIGATE_TOPIC)
-    log.info("subscribed to %s", FRIGATE_TOPIC)
+    # subscription happens in on_connect (fires on first CONNACK inside loop_forever)
     import threading
     def run():
         client.loop_forever()
@@ -483,6 +500,9 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
 
     while True:
         ev = await events.get()
+        if not isinstance(ev, dict):
+            # malformed payload (non-dict); skip, never crash on one bad message
+            continue
         if ev.get('tick'):
             now = time.monotonic()
             for eid in list(pending.keys()):
@@ -493,7 +513,10 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
             for eid in expired:
                 del pending[eid]
             continue
-        after = ev.get('after', {})
+        after = ev.get('after') or ev  # tolerate null/absent 'after' (fields at top level)
+        if not isinstance(after, dict):
+            log.warning("frigate event: non-dict payload skipped: %r", str(ev)[:120])
+            continue
         camera = after.get('camera', '')
         label = after.get('label', '')
         etype = ev.get('type', '')
