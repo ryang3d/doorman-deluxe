@@ -346,6 +346,25 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
     return len(pcm)
 
 
+def _claims_notification(text: str) -> bool:
+    """True if the spoken text claims the homeowner was notified/alerted.
+
+    The 27B frequently SAYS 'I've let the resident know' without actually calling
+    notify_ryan (2026-09-18: 'I'll let the resident know' with no tool call; and a
+    stale early notify not refreshed when the visitor adds carrier/signature
+    details). This drives the code backstop: if the reply claims a notification but
+    none fired this turn, fire a catch-up one. Match on an OWNER noun + ACTION verb
+    (a bare 'I'll let you know' to the visitor is NOT a claim, so require an
+    owner/resident/homeowner/owner noun)."""
+    t = (text or '').lower()
+    owner = any(w in t for w in
+                ('resident', 'homeowner', 'home owner', 'owner',
+                 'the house', 'the homeowner'))
+    verb = any(w in t for w in
+               ('know', 'notif', 'alert', 'told', 'sent', 'gave'))
+    return owner and verb
+
+
 async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
                      max_tool_rounds=3):
     """One conversational turn against the OpenAI-compatible endpoint WITH tools
@@ -362,6 +381,7 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
     messages = [{'role': 'system', 'content': system_prompt}] + history + \
                [{'role': 'user', 'content': user_text}]
     new_msgs = []
+    notify_fired = False
     for _round in range(max_tool_rounds + 1):
         payload = {
             'model': cfg['DOORMAN_LLM_MODEL'],
@@ -396,6 +416,20 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
         tool_calls = choice.get('tool_calls') or []
         if not tool_calls:
             final = (choice.get('content') or '').strip()
+            # Backstop: if the reply CLAIMS a notification but none fired this
+            # turn, fire a catch-up notify_ryan so the owner actually hears from
+            # the doorman even when the model only described the action verbally.
+            if final and _claims_notification(final) and not notify_fired:
+                try:
+                    catch = ("Doorman notified the homeowner from the door. "
+                             "Visitor statement: %s" % user_text[:140])
+                    log.info("notify backstop: reply claimed a notification "
+                             "without a tool call -> firing catch-up notify_ryan")
+                    ok, _val = await doorman_tools.notify_ryan(catch)
+                    if activity:
+                        await activity.mark()
+                except Exception as e:
+                    log.warning("notify backstop failed: %s", e)
             messages.append({'role': 'assistant', 'content': final})
             new_msgs.append(messages[-1])
             return final, new_msgs
@@ -411,6 +445,7 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
             if activity:
                 await activity.mark()
             if fn == 'notify_ryan':
+                notify_fired = True
                 ok, val = await doorman_tools.notify_ryan(
                     str(args.get('message', '')))
             elif fn == 'snapshot_front_door':
