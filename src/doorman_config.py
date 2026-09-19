@@ -144,6 +144,16 @@ DEFAULTS = {
     # dropped before it reaches the brain (no fake "visitor said", no idle reset).
     # Parakeet returns no such field, so this is a no-op there. Default 0.25.
     'DOORMAN_LOCAL_STT_MAX_NSP': 0.25,
+    # Mic-stall recovery. The doorbell's RTSP audio relay wedges under concurrent
+    # stream load and delivers audio in bursts with 4-12 s gaps (verified
+    # 2026-09-19). On a gap this long the ffmpeg pull is killed and reopened so
+    # the next words aren't swallowed. Lower = more aggressive reopens (risk:
+    # chatty reopens on brief drops); higher = fewer reopens (risk: more words
+    # lost per stall). Default 5.0 s.
+    'DOORMAN_LOCAL_MIC_STALL_LIMIT_S': 5.0,
+    # Max ffmpeg reopens per interaction before giving up (dead-source bound).
+    # Default 8.
+    'DOORMAN_LOCAL_MIC_MAX_REOPENS': 8,
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     'DOORMAN_ANIMAL_BEHAVIOR': 'voice',

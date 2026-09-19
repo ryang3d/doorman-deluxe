@@ -35,31 +35,39 @@ def test_endpointer():
     # Production-default pre-roll (300 ms) keeps the ring (keep_frames=24) large
     # enough to hold the full scenario; preres_ms=100 (the original plan) gave
     # keep=17 and truncated the voice frames before the end-silence scan ran.
+    # Synthetic clock (30 ms cadence) drives the wall-clock tail gate so the test
+    # is deterministic without sleeping.
     ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=150, preres_ms=300)
+    T0 = 100.0
+    _i = [0]
+    def tick():
+        t = T0 + _i[0] * 0.03
+        _i[0] += 1
+        return t
     out = None
     for _ in range(5):
-        out = ep.push_frame(SIL, muted=False)      # idle silence
+        out = ep.push_frame(SIL, muted=False, now=tick())
     assert out is None, out
     voice = _speech_frames(6)                       # 180 ms of real speech
     for f in voice:
-        out = ep.push_frame(f, muted=False)
+        out = ep.push_frame(f, muted=False, now=tick())
     assert out is None, "must not fire before end-silence"
     for _ in range(13):                             # trailing silence to >= 300 ms
-        out = ep.push_frame(SIL, muted=False)
+        out = ep.push_frame(SIL, muted=False, now=tick())
     assert out is not None and len(out) >= 480, "endpoint missed"
     # blip too short must not fire
     ep2 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
     out2 = None
-    for _ in range(5): out2 = ep2.push_frame(SIL, muted=False)
-    for f in voice[:4]: out2 = ep2.push_frame(f, muted=False)   # 120 ms < 300
-    for _ in range(15): out2 = ep2.push_frame(SIL, muted=False)
+    for _ in range(5): out2 = ep2.push_frame(SIL, muted=False, now=tick())
+    for f in voice[:4]: out2 = ep2.push_frame(f, muted=False, now=tick())   # 120 ms < 300
+    for _ in range(15): out2 = ep2.push_frame(SIL, muted=False, now=tick())
     assert out2 is None, "short blip must not endpoint"
     # muted frames never start speech
     ep3 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=150)
-    for _ in range(5): ep3.push_frame(SIL, muted=False)
-    for f in voice: ep3.push_frame(f, muted=True)
-    for _ in range(15): ep3.push_frame(SIL, muted=False)
-    assert ep3._check_endpoint() is None, "muted voice must not count"
+    for _ in range(5): ep3.push_frame(SIL, muted=False, now=tick())
+    for f in voice: ep3.push_frame(f, muted=True, now=tick())
+    for _ in range(15): ep3.push_frame(SIL, muted=False, now=tick())
+    assert ep3._check_endpoint(now=tick()) is None, "muted voice must not count"
     check("endpointer", "ok", "ok")
 
 def test_endpointer_noise_tolerance():
@@ -67,14 +75,21 @@ def test_endpointer_noise_tolerance():
     # Live door-mic behaviour (2026-09-17): the endpointer must fire on a real
     # voice segment and NOT on a too-short ambient-noise blip. We build the ring
     # flags directly (bypassing VAD) so the segment logic is tested deterministically.
-    ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
-    ep.keep_frames = 334
+    import time as _time
     FB = vl.VAD_FRAME_BYTES
     FR = b'\x00' * FB
     S = _speech_frames(1, off=3)[0]   # a loud real 30 ms speech frame (RMS ~7800 > min_rms 500)
+    T0 = 1000.0
+    def ts(i):  # synthetic monotonic ramp, 30ms cadence
+        return T0 + i * 0.03
     # 1) A real 300 ms voice segment (10 frames of actual audio) followed by 300
     #    ms silence -> must fire.
-    ep.frames = [(S, 1, 0)] * 10 + [(FR, 0, 0)] * 10
+    ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
+    ep.keep_frames = 334
+    ep.frames = [(S, 1, 0, ts(i)) for i in range(10)] + \
+                [(FR, 0, 0, ts(10 + i)) for i in range(10)]
+    # tail_ms is measured against time.monotonic() at call time; with the synthetic
+    # T0 far in the past, the trailing silence is well past silence_ms -> fires.
     out = ep._check_endpoint()
     assert out is not None and len(out) >= 10 * FB, "real voice segment must fire"
     # 2) A single 90 ms noise blip (3 frames) followed by silence -> must NOT fire
@@ -83,7 +98,9 @@ def test_endpointer_noise_tolerance():
     #    that's loud enough to pass the RMS gate; the segment-length rule catches it).
     ep2 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
     ep2.keep_frames = 334
-    ep2.frames = [(FR, 0, 0)] * 5 + [(S, 1, 0)] * 3 + [(FR, 0, 0)] * 20
+    ep2.frames = [(FR, 0, 0, ts(i)) for i in range(5)] + \
+                 [(S, 1, 0, ts(5 + i)) for i in range(3)] + \
+                 [(FR, 0, 0, ts(8 + i)) for i in range(20)]
     assert ep2._check_endpoint() is None, "short noise blip must not fire"
     # 3) A real voice segment (10 frames of actual audio, 300 ms) then a short
     #    isolated noise blip (3 frames) 12 frames later, then 300 ms silence ->
@@ -91,16 +108,68 @@ def test_endpointer_noise_tolerance():
     #    endpointer picks the voice segment.
     ep3 = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
     ep3.keep_frames = 334
-    ep3.frames = ([(FR, 0, 0)] * 5          # idle
-                  + [(S, 1, 0)] * 10        # real voice (300 ms, high RMS)
-                  + [(FR, 0, 0)] * 12       # gap > VOICE_GAP_MS
-                  + [(S, 1, 0)] * 3         # isolated noise blip (90 ms)
-                  + [(FR, 0, 0)] * 12)      # trailing silence >= 300 ms
+    ep3.frames = ([(FR, 0, 0, ts(i)) for i in range(5)]          # idle
+                  + [(S, 1, 0, ts(5 + i)) for i in range(10)]    # real voice (300 ms, high RMS)
+                  + [(FR, 0, 0, ts(15 + i)) for i in range(12)]  # gap > VOICE_GAP_MS
+                  + [(S, 1, 0, ts(27 + i)) for i in range(3)]    # isolated noise blip (90 ms)
+                  + [(FR, 0, 0, ts(30 + i)) for i in range(12)]) # trailing silence >= 300 ms
     out3 = ep3._check_endpoint()
     assert out3 is not None, "real voice must fire despite a later noise blip"
     # The utterance should span the voice segment (+preroll), not the noise blip.
     assert len(out3) < 25 * FB, "utterance must not swallow the isolated noise blip"
     check("endpointer_noise_tolerance", "ok", "ok")
+
+
+def test_endpointer_stall_split():
+    import voice_local as vl
+    import time as _time
+    # The 2026-09-19 "Is Jenny home?" -> "Why is Jenny on?" regression: a 5-12s
+    # RTSP stall between two utterances must SPLIT them (wall-clock gap >
+    # VOICE_GAP_MS) instead of merging into one ~9s blob that STT mangles.
+    FB = vl.VAD_FRAME_BYTES
+    FR = b'\x00' * FB
+    S = _speech_frames(1, off=3)[0]
+    T0 = 2000.0
+    # 2026-09-19 "Is Jenny home?" -> "Why is Jenny on?" regression: the RTSP mic
+    # stalls 4-12 s mid-session. During a stall ffmpeg delivers NO frames, so the
+    # wall-clock time between the last pre-stall frame and the first post-stall
+    # frame is 4-12 s even though only a handful of frames exist in between. The
+    # endpointer must SPLIT there (wall-clock gap > VOICE_GAP_MS) instead of
+    # merging the two utterances into one ~9 s blob that STT mangles.
+    #
+    # We drive push_frame (real VAD) with a synthetic 30 ms clock that has a 6 s
+    # jump between the two speech runs. FR = silence frame (VAD non-speech), S = a
+    # loud real 30 ms speech frame (VAD speech, RMS ~7800 > min_rms 500).
+    ep = vl.UtteranceEndpointer(silence_ms=300, min_speech_ms=300, preres_ms=300)
+    ep.keep_frames = 500
+    _i = [0]
+    t = [T0]
+    def tick(step):
+        t[0] += step
+        _i[0] += 1
+        return t[0]
+    fired = []
+    for _ in range(5):          # idle
+        o = ep.push_frame(FR, muted=False, now=tick(0.03))
+        if o: fired.append(o)
+    for _ in range(10):         # utterance 1 ("Is Jenny")
+        o = ep.push_frame(S, muted=False, now=tick(0.03))
+        if o: fired.append(o)
+    for _ in range(10):         # 6 s STALL (no audio) -> clock jumps 0.6s/frame
+        o = ep.push_frame(FR, muted=False, now=tick(0.6))
+        if o: fired.append(o)
+    for _ in range(10):         # utterance 2 ("home?")
+        o = ep.push_frame(S, muted=False, now=tick(0.03))
+        if o: fired.append(o)
+    for _ in range(13):         # trailing silence to >= 300 ms
+        o = ep.push_frame(FR, muted=False, now=tick(0.03))
+        if o: fired.append(o)
+    assert len(fired) >= 1, "the pre-stall utterance must fire on its own"
+    # The pre-stall utterance is ~10 S frames + 10 pre-roll frames. If the two
+    # utterances had MERGED, the blob would be >= ~20 S frames + the 10 stall FR
+    # frames between them -> much bigger than 25 frames.
+    assert len(fired[0]) < 25 * FB, "pre-stall utterance must NOT merge with post-stall speech"
+    check("endpointer_stall_split", "ok", "ok")
 
 def test_voice_map():
     import voice_local as vl

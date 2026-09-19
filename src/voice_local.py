@@ -64,7 +64,7 @@ class UtteranceEndpointer:
         ring_from_silence = max(silence_ms + preres_ms + 100, 0) // VAD_FRAME_MS + 1
         self.keep_frames = max(ring_from_silence,
                                int(max_ring_ms) // VAD_FRAME_MS + 1)
-        self.frames = []              # ring of (frame_bytes, is_speech, muted)
+        self.frames = []              # ring of (frame_bytes, is_speech, muted, t_mono)
         self._speech_total = 0        # cumulative count of non-muted speech frames (VAD)
         # Duration (ms) of the currently OPEN trailing speech segment (visitor is
         # mid-utterance, not yet finalized). 0 when no open segment. Used to refresh
@@ -84,9 +84,11 @@ class UtteranceEndpointer:
         aggressiveness / mic level / signal is the problem."""
         return self._speech_total
 
-    def push_frame(self, frame: bytes, muted: bool):
+    def push_frame(self, frame: bytes, muted: bool, now: float = None):
         """One 30 ms frame. Returns the utterance bytes (s16le 16k) when an endpoint
-        fires, else None."""
+        fires, else None. `now` is the monotonic timestamp for this frame (defaults to
+        time.monotonic()). Tests pass a synthetic clock to drive the wall-clock gap
+        logic deterministically without sleeping."""
         if len(frame) != VAD_FRAME_BYTES:
             frame = frame[:VAD_FRAME_BYTES]
             if len(frame) != VAD_FRAME_BYTES:
@@ -97,10 +99,16 @@ class UtteranceEndpointer:
             speech = False
         if speech:
             self._speech_total += 1
-        self.frames.append((frame, speech, muted))
+        import time as _time
+        if now is None:
+            now = _time.monotonic()
+        # t_mono: wall-clock stamp. Gap detection in _check_endpoint uses the time
+        # DELTA between frames, not frame count, so a mic RTSP stall (no frames for
+        # 4-12s) splits a segment instead of letting two utterances merge.
+        self.frames.append((frame, speech, muted, now))
         if len(self.frames) > self.keep_frames:
             self.frames = self.frames[-self.keep_frames:]
-        return self._check_endpoint()
+        return self._check_endpoint(now)
 
     # Tolerated gap inside a voice burst. A between-words pause in a normal
     # sentence is ~150-300 ms, so 300 ms keeps a whole sentence/utterance as one
@@ -108,7 +116,7 @@ class UtteranceEndpointer:
     # are separated by far more, so they stay their own (too-short) segments.
     VOICE_GAP_MS = 300
 
-    def _check_endpoint(self):
+    def _check_endpoint(self, now: float = None):
         """Fire when the most recent UNMUTED voice segment is >= min_speech_ms,
         has mean RMS >= min_rms, and >= silence_ms has elapsed since its last frame.
 
@@ -121,19 +129,31 @@ class UtteranceEndpointer:
         So a segment only counts if its mean RMS >= min_rms (default 500): real
         voice passes, ambient noise blips do not. This is what makes the endpointer
         stop firing on the 390 ms noise blips and instead fire on your actual words.
+
+        2026-09-19: gaps are now measured in WALL-CLOCK time (the t_mono on each
+        frame), not frame count. The RTSP mic source stalls for 4-12 s during
+        two-way sessions (AD410 concurrent-stream load); during a stall ffmpeg
+        delivers no frames, so a frame-count gap of N frames is actually N seconds
+        of real time. Measuring by count let two separate utterances (one before a
+        stall, one after) be seen as a single ~300 ms gap and MERGED into one
+        ~9 s blob that STT hallucinated a mix out of ("Is Jenny home?" -> "Why is
+        Jenny on?", 2026-09-19). Wall-clock gaps make a stall split the segment.
         """
+        import time as _time
+        if now is None:
+            now = _time.monotonic()
         n = len(self.frames)
         if n < 2:
             return None
         # Forward scan tracking the most recent UNMUTED voice *segment* that
-        # reached min_speech_ms. Segments are delimited by gaps > VOICE_GAP_MS,
-        # by muted (echo-gate) frames, or by end-of-ring. Isolated ambient-noise
-        # frames stay their own too-short segments and never become the answer.
-        gap_frames = max(1, self.VOICE_GAP_MS // VAD_FRAME_MS)
+        # reached min_speech_ms. Segments are delimited by a WALL-CLOCK gap
+        # > VOICE_GAP_MS (or by frame count, which is the same when frames arrive
+        # on time), by muted (echo-gate) frames, or by end-of-ring.
+        gap_s = self.VOICE_GAP_MS / 1000.0
         last_good = None                 # (start, end) of most recent long-enough segment
         seg_start = seg_end = None
         for i in range(n):
-            fr, sp, muted = self.frames[i]
+            fr, sp, muted, t = self.frames[i]
             if muted:
                 # echo-gate region resets the current segment
                 seg_start = seg_end = None
@@ -141,9 +161,14 @@ class UtteranceEndpointer:
             if sp:
                 if seg_start is None:
                     seg_start = seg_end = i
-                elif i - seg_end > gap_frames:
-                    # gap too big -> previous segment closed; record it if long enough
-                    if (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
+                elif (t - self.frames[seg_end][3]) > gap_s:
+                    # wall-clock gap too big -> previous segment closed; record it
+                    # if long enough. (A stall shows up here as a big time gap even
+                    # though only a few frames exist between the two speech runs.)
+                    # 1 ms epsilon: boundary duration vs min_speech_ms must not lose
+                    # to float timestamp error.
+                    if (self.frames[seg_end][3] - self.frames[seg_start][3]
+                            + VAD_FRAME_MS / 1000.0) * 1000 + 1.0 >= self.min_speech_ms:
                         last_good = (seg_start, seg_end)
                     seg_start = seg_end = i
                 else:
@@ -151,8 +176,11 @@ class UtteranceEndpointer:
         # close the trailing (possibly still-open) segment if it's long enough AND
         # it is the most recent long-enough segment (don't overwrite a good
         # segment with a trailing too-short noise blip).
-        if seg_start is not None and (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
-            last_good = (seg_start, seg_end)
+        if seg_start is not None:
+            trail_ms = (self.frames[seg_end][3] - self.frames[seg_start][3]
+                        + VAD_FRAME_MS / 1000.0) * 1000
+            if trail_ms + 1.0 >= self.min_speech_ms:
+                last_good = (seg_start, seg_end)
         # Expose the currently-OPEN trailing segment's duration (the visitor is
         # mid-utterance, hasn't hit the 700ms end-silence yet), GATED on the RMS
         # threshold so ambient noise doesn't keep it "open". This door mic's
@@ -161,10 +189,11 @@ class UtteranceEndpointer:
         # RMS >= min_rms keeps the idle clock fresh only during real voice
         # (RMS 9000+). 0 when no open RMS-passing speech run.
         if seg_start is not None:
-            dur_ms = (seg_end - seg_start + 1) * VAD_FRAME_MS
+            dur_ms = (self.frames[seg_end][3] - self.frames[seg_start][3]
+                      + VAD_FRAME_MS / 1000.0) * 1000
             try:
                 import numpy as _np
-                ob = b''.join(fr for fr, _, _ in self.frames[seg_start:seg_end + 1])
+                ob = b''.join(fr for fr, _, _, _ in self.frames[seg_start:seg_end + 1])
                 a = _np.frombuffer(ob, dtype=_np.int16).astype(_np.float64)
                 orms = float(_np.sqrt(_np.mean(a ** 2))) if a.size else 0.0
             except Exception:
@@ -177,7 +206,7 @@ class UtteranceEndpointer:
         seg_start, seg_end = last_good
         # RMS gate: the door mic's ambient false-positives are quiet (RMS ~300-400);
         # real voice is loud (RMS 9000+). A segment below min_rms is a noise blip.
-        seg_bytes = b''.join(fr for fr, _, _ in self.frames[seg_start:seg_end + 1])
+        seg_bytes = b''.join(fr for fr, _, _, _ in self.frames[seg_start:seg_end + 1])
         try:
             import numpy as _np
             a = _np.frombuffer(seg_bytes, dtype=_np.int16).astype(_np.float64)
@@ -186,14 +215,19 @@ class UtteranceEndpointer:
             seg_rms = 0.0
         if seg_rms < self.min_rms:
             return None
-        # time since that segment's last frame
-        tail_ms = (n - 1 - seg_end) * VAD_FRAME_MS
-        if tail_ms < self.silence_ms:
+        # time since that segment's last frame (wall clock; a stall after the last
+        # speech frame counts as silence toward the endpoint). 1 ms epsilon:
+        # frame timestamps are float and the gate is a boundary comparison, so
+        # an exact "silence_ms has elapsed" landing must not lose to float error.
+        tail_ms = (now - self.frames[seg_end][3]) * 1000
+        if tail_ms + 1.0 < self.silence_ms:
             return None
-        # utterance = from just before the segment start through its end.
+        # utterance = from just before the segment start through its end. Frames
+        # inside the segment are contiguous speech (gap <= VOICE_GAP_MS), so
+        # concatenating them is correct even across a sub-300ms drop.
         start = max(0, seg_start - 10)
         end = seg_end + 1
-        utter = b''.join(fr for fr, _, _ in self.frames[start:end])
+        utter = b''.join(fr for fr, _, _, _ in self.frames[start:end])
         self.frames = self.frames[end:]   # consume; keep post-end tail for next
         self._open_seg_ms = 0             # that segment just closed
         return utter or None
@@ -571,17 +605,73 @@ async def run_interaction_local(system_prompt, trigger_text,
         _last_data_t = time.monotonic()
         _first_data_logged = False
         _speech_reported = -10.0
+        # Stall recovery: during a two-way session the AD410 wedges under
+        # concurrent-stream load and the go2rtc relay delivers audio in bursts with
+        # 4-12s gaps (verified 2026-09-19: STALLED 4.7/7.2/12.0/6.4s in one
+        # interaction). Those gaps swallowed whole utterances ("your name" was in a
+        # 12s gap, so it never reached the endpointer). On a gap > the limit, kill
+        # the ffmpeg pull and reopen it; the go2rtc source re-spins and the next
+        # words come through. Bounded by _max_reopens so a dead source can't loop
+        # forever. The endpointer's wall-clock gap detection (same commit) makes the
+        # residual sub-limit gaps SPLIT an utterance instead of merging two.
+        _stall_limit_s = float(cfg.get('DOORMAN_LOCAL_MIC_STALL_LIMIT_S', 5.0))
+        _max_reopens = int(cfg.get('DOORMAN_LOCAL_MIC_MAX_REOPENS', 8))
+        _reopens = 0
         try:
             while not stop_ev.is_set():
-                data = await proc.stdout.read(3200)
+                if proc is None:
+                    proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain, limiter=mic_limiter)
+                    if proc is None:
+                        log.warning("local mic: reopen probe failed (%d reopens)", _reopens + 1)
+                        _reopens += 1
+                        _last_data_t = time.monotonic()
+                        if _reopens > _max_reopens:
+                            log.warning("local mic: gave up after %d reopens", _reopens)
+                            break
+                        await asyncio.sleep(3.0)
+                        continue
+                    _last_data_t = time.monotonic()
+                    log.info("local mic: RTSP audio (re)opened (reopen %d)", _reopens)
+                    continue
+                try:
+                    data = await asyncio.wait_for(proc.stdout.read(3200), timeout=_stall_limit_s)
+                except asyncio.TimeoutError:
+                    log.warning("local mic: STALLED >%.1fs with no audio data -> reopening ffmpeg pull (reopen %d, total %d bytes)",
+                                _stall_limit_s, _reopens + 1, _seen_data)
+                    try: proc.kill()
+                    except Exception: pass
+                    proc = None
+                    _reopens += 1
+                    _last_data_t = time.monotonic()
+                    if _reopens > _max_reopens:
+                        log.warning("local mic: gave up after %d reopens", _reopens)
+                        break
+                    continue
+                except Exception as e:
+                    log.warning("local mic: read error %s -> reopening ffmpeg pull", str(e)[:80])
+                    try: proc.kill()
+                    except Exception: pass
+                    proc = None
+                    _reopens += 1
+                    _last_data_t = time.monotonic()
+                    continue
                 if not data:
-                    break
+                    log.warning("local mic: ffmpeg EOF -> reopening ffmpeg pull (reopen %d, total %d bytes)", _reopens + 1, _seen_data)
+                    try: proc.kill()
+                    except Exception: pass
+                    proc = None
+                    _reopens += 1
+                    _last_data_t = time.monotonic()
+                    if _reopens > _max_reopens:
+                        log.warning("local mic: gave up after %d reopens", _reopens)
+                        break
+                    continue
                 if _cap:
                     try: _cap.writeframes(data)
                     except Exception: pass
                 _now = time.monotonic()
-                if _now - _last_data_t > 2.0:
-                    log.warning("local mic: STALLED %.1fs with no audio data (total %d bytes)",
+                if _now - _last_data_t > 3.0:
+                    log.warning("local mic: trickle - no audio data for %.1fs (total %d bytes)",
                                 _now - _last_data_t, _seen_data)
                 _last_data_t = _now
                 if not _first_data_logged:
