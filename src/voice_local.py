@@ -595,6 +595,20 @@ async def run_interaction_local(system_prompt, trigger_text,
         if not text:
             log.info("local stt: silence/empty")
             return
+        # Whisper anti-hallucination gate. Whisper (unlike Parakeet) will invent a
+        # plausible short phrase on door ambient noise; the service returns a
+        # per-utterance no_speech_prob (max over kept segments). Real door speech
+        # measures ~0.00-0.05 here; noise hallucinations ~0.30+. Drop anything
+        # above the threshold BEFORE it reaches the brain as a fake "visitor said",
+        # and before activity.mark() so noise does not reset the idle clock.
+        # (Parakeet has no such field -> None -> gate is a no-op, its empty result
+        # already covers the common case.)
+        nsp = stt.get('no_speech_prob')
+        max_nsp = float(cfg.get('DOORMAN_LOCAL_STT_MAX_NSP', 0.25))
+        if nsp is not None and nsp > max_nsp:
+            log.info("local stt: dropped low-confidence speech '%s' "
+                     "(no_speech_prob=%.3f > %.2f)", text, nsp, max_nsp)
+            return
         # Real visitor audio only: mark activity AFTER the empty check, so ambient
         # noise that the endpointer flags but STT reads as silence does NOT reset
         # the idle clock. (2026-09-17: a person interaction rode its full 120 s

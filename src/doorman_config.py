@@ -137,6 +137,13 @@ DEFAULTS = {
     # so the brain is told to reply in Spanish. Flip to 'es' for an all-Spanish
     # household; per-utterance switching needs a language detector (out of scope).
     'DOORMAN_LOCAL_LANG_FALLBACK': 'auto',
+    # Anti-hallucination gate for the LOCAL STT engine. When STT is Whisper, the
+    # service returns a per-utterance no_speech_prob (max over kept segments).
+    # Real door speech measures ~0.00-0.05 on this mic; ambient-noise
+    # hallucinations ~0.30+. An utterance with no_speech_prob above this value is
+    # dropped before it reaches the brain (no fake "visitor said", no idle reset).
+    # Parakeet returns no such field, so this is a no-op there. Default 0.25.
+    'DOORMAN_LOCAL_STT_MAX_NSP': 0.25,
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     'DOORMAN_ANIMAL_BEHAVIOR': 'voice',
