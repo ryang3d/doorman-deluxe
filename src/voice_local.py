@@ -66,6 +66,17 @@ class UtteranceEndpointer:
                                int(max_ring_ms) // VAD_FRAME_MS + 1)
         self.frames = []              # ring of (frame_bytes, is_speech, muted)
         self._speech_total = 0        # cumulative count of non-muted speech frames (VAD)
+        # Duration (ms) of the currently OPEN trailing speech segment (visitor is
+        # mid-utterance, not yet finalized). 0 when no open segment. Used to refresh
+        # the idle clock while the visitor is still talking so the watchdog cannot
+        # end the session mid-sentence (a 700ms-silence endpointer never finalizes
+        # long connected speech, so activity must come from "still speaking" not
+        # from finalized STT text).
+        self._open_seg_ms = 0
+
+    def open_segment_ms(self):
+        """ms of the currently-open trailing VAD speech segment, 0 if none."""
+        return self._open_seg_ms
 
     def speech_frame_count(self):
         """Cumulative number of non-muted frames the VAD flagged as speech.
@@ -142,6 +153,25 @@ class UtteranceEndpointer:
         # segment with a trailing too-short noise blip).
         if seg_start is not None and (seg_end - seg_start + 1) * VAD_FRAME_MS >= self.min_speech_ms:
             last_good = (seg_start, seg_end)
+        # Expose the currently-OPEN trailing segment's duration (the visitor is
+        # mid-utterance, hasn't hit the 700ms end-silence yet), GATED on the RMS
+        # threshold so ambient noise doesn't keep it "open". This door mic's
+        # ambient flags as VAD "speech" (RMS ~300-400) so a VAD-only open segment
+        # stays open ~80% of the time even with nobody speaking; requiring
+        # RMS >= min_rms keeps the idle clock fresh only during real voice
+        # (RMS 9000+). 0 when no open RMS-passing speech run.
+        if seg_start is not None:
+            dur_ms = (seg_end - seg_start + 1) * VAD_FRAME_MS
+            try:
+                import numpy as _np
+                ob = b''.join(fr for fr, _, _ in self.frames[seg_start:seg_end + 1])
+                a = _np.frombuffer(ob, dtype=_np.int16).astype(_np.float64)
+                orms = float(_np.sqrt(_np.mean(a ** 2))) if a.size else 0.0
+            except Exception:
+                orms = 0.0
+            self._open_seg_ms = dur_ms if orms >= self.min_rms else 0
+        else:
+            self._open_seg_ms = 0
         if last_good is None:
             return None
         seg_start, seg_end = last_good
@@ -165,6 +195,7 @@ class UtteranceEndpointer:
         end = seg_end + 1
         utter = b''.join(fr for fr, _, _ in self.frames[start:end])
         self.frames = self.frames[end:]   # consume; keep post-end tail for next
+        self._open_seg_ms = 0             # that segment just closed
         return utter or None
 
     def flush(self):
@@ -573,6 +604,22 @@ async def run_interaction_local(system_prompt, trigger_text,
                         ep.push_frame(frame, muted=True)
                         continue
                     utter = ep.push_frame(frame, muted=False)
+                    # VAD-aware idle: refresh the activity clock while the visitor is
+                    # still mid-utterance (the endpointer has an open speech segment
+                    # >= min_speech_ms). This keeps long CONNECTED speech alive so the
+                    # idle watchdog cannot end the session mid-sentence. Without this,
+                    # the idle clock only advanced on finalized STT text; a visitor
+                    # talking in continuous phrases (never hitting the 700ms end-
+                    # silence) went idle at 40s and got cut off mid-sentence (verified
+                    # 2026-09-19: capture had loud continuous speech cap 26-68s but the
+                    # endpointer never finalized it, so the session ended idle). The
+                    # open segment only persists while VAD sees speech, so this does NOT
+                    # re-open the old "ambient noise keeps the session alive" bug: quiet
+                    # noise is an open segment of ~0ms (RMS-blip frames don't extend a
+                    # qualifying segment), and once the visitor stops, open_segment_ms
+                    # -> 0 and the clock starts counting again.
+                    if ep.open_segment_ms() >= ep.min_speech_ms:
+                        await activity.mark()
                     if utter:
                         await handle_utterance(utter)
         except asyncio.CancelledError:
