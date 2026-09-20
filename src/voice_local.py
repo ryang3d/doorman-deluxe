@@ -257,15 +257,11 @@ def openai_tools_schema():
 
 def local_system_prompt(base_prompt: str) -> str:
     return base_prompt + (
-        "\n\nLOCAL-PIPELINE NOTES: You are now spoken by a local text-to-speech engine. "
-        "Keep replies short: one or two sentences, no lists, no markdown. Reply in the "
-        "same language the visitor uses (English or Spanish). "
-        "TOOLS ARE OPTIONAL: for a plain greeting just speak it directly - do NOT call "
-        "snapshot_front_door or notify_ryan first; that only adds delay before the visitor "
-        "hears you. Use snapshot_front_door only when you genuinely need to look (the "
-        "visitor asks who is there, or you must see something you cannot). Use "
-        "notify_ryan only for a package, issue, or urgent report worth pinging the "
-        "homeowner about. When you do call a tool, call it once, then say one short line.")
+        "\n\nLOCAL-PIPELINE NOTES: You are now spoken by a local text-to-speech engine, so "
+        "keep replies short: one or two sentences, no lists, no markdown. Reply in the "
+        "same language the visitor uses (English or Spanish). Tool calls add a short "
+        "pause, so only call them when they genuinely help; when you do, call it once, "
+        "then say one short line.")
 
 
 # ---------------------------------------------------------------- HTTP clients
