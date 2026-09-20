@@ -486,8 +486,13 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
             # the doorman even when the model only described the action verbally.
             if final and _claims_notification(final) and not notify_fired:
                 try:
-                    catch = ("Doorman notified the homeowner from the door. "
-                             "Visitor statement: %s" % user_text[:140])
+                    # Lead with the visitor's actual words - the phone truncates long
+                    # notification bodies, so the content that matters (what the
+                    # visitor said) must be at the START, not buried behind a
+                    # "Doorman notified the homeowner..." prefix (title is already
+                    # "Doorman", so the prefix was redundant and pushed the visitor
+                    # text off the end where truncation cut it).
+                    catch = ("Visitor at the door: \"%s\"" % user_text.strip()[:140])
                     log.info("notify backstop: reply claimed a notification "
                              "without a tool call -> firing catch-up notify_ryan")
                     ok, _val = await doorman_tools.notify_ryan(catch)
