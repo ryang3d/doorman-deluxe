@@ -4,9 +4,14 @@
 > development source of truth; the public repo is a clean, scrubbed export of `main`
 > (no camera password, no test snapshots).
 
-AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker using a Gemini Live two-way voice session, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
+AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
 
-Everything runs locally except the voice engine: Frigate (person/face/cat/dog detection + snapshots), go2rtc WebRTC talkback to the doorbell, Home Assistant (doorbell-press trigger, notifications, camera snapshots), and a Gemini Live cloud voice session.
+Everything runs locally, including the voice engine, which has two options:
+
+- **Gemini Live (default)** - two-way cloud voice session: mic off the doorbell camera RTSP, AI speech pushed back through go2rtc consumer-mode WebRTC to the doorbell speaker.
+- **Local voice engine** (`DOORMAN_VOICE_ENGINE=local`) - fully on-LAN STT -> LLM -> TTS pipeline (no cloud voice call). See "Local voice engine" below.
+
+The rest of the stack is the same either way: Frigate (person/face/cat/dog detection + snapshots), go2rtc WebRTC talkback to the doorbell, and Home Assistant (doorbell-press trigger, notifications, camera snapshots).
 
 ## Origin
 
@@ -19,7 +24,9 @@ own version.
 ## Architecture
 
 - Trigger (configurable): Frigate person/face/cat/dog detection via MQTT, or Home Assistant `binary_sensor.doorbell_pressed` via WebSocket. Cat/dog detections get a configurable animal reaction (playful spoken greeting + notification) instead of a full visitor conversation; see `DOORMAN_ANIMAL_BEHAVIOR`.
-- Voice: Gemini Live two-way audio (cloud). Mic comes off the doorbell camera RTSP; AI speech is pushed back through go2rtc consumer-mode WebRTC to the doorbell speaker.
+- Voice: two selectable engines via `DOORMAN_VOICE_ENGINE` -
+  - `gemini` (default): Gemini Live two-way audio (cloud). Mic comes off the doorbell camera RTSP; AI speech is pushed back through go2rtc consumer-mode WebRTC to the doorbell speaker.
+  - `local`: on-LAN STT -> LLM -> TTS (faster-whisper or Parakeet STT, OpenAI-compatible LLM brain, Chatterbox TTS). Mic capture and go2rtc talkback are the same; no cloud voice call.
 - Tools the model can call: snapshot the front door, notify the homeowner.
 - Snapshots in notifications are captured by HA's `camera.snapshot` and served at HA `/local` (no SSH, no extra port).
 
@@ -29,7 +36,8 @@ own version.
 - A doorbell camera with a speaker + mic reachable over RTSP (verified on Amcrest AD410).
 - Frigate with go2rtc (bundled) exposing a two-way stream for the doorbell.
 - Home Assistant (for notify, camera.snapshot, and optional doorbell-press trigger).
-- Google Gemini API key.
+- **Gemini engine:** Google Gemini API key.
+- **Local engine** (`DOORMAN_VOICE_ENGINE=local`): an STT service (faster-whisper `:10302` recommended, or Parakeet `:10301` - both bundled in `docker-compose.yml`), an OpenAI-compatible LLM endpoint (`/chat/completions` with tool calling - SGLang/Ollama/vLLM, external), and a TTS endpoint (Voicebox serving Chatterbox, external).
 
 ### Frigate version requirement
 
@@ -58,11 +66,16 @@ own version.
 
    `docker compose up -d --build`
 
+   This starts `doorman` plus the two optional STT services (`whisper` on `:10302`,
+   `parakeet` on `:10301`). `doorman` only uses one of them when
+   `DOORMAN_VOICE_ENGINE=local`; for the default Gemini engine you can skip them with
+   `docker compose up -d --build doorman` to save the GPU VRAM they would otherwise reserve.
+
 5. Verify:
 
    `docker compose logs -f doorman`
 
-   Healthy startup logs `personalized greeting enabled: <bool>`, `trigger mode: <mode>`, `animal behavior: <voice|notify|off>`, and `subscribed to frigate/events`.
+   Healthy startup logs `personalized greeting enabled: <bool>`, `trigger mode: <mode>`, `animal behavior: <voice|notify|off>`, and `subscribed to frigate/events`. With `DOORMAN_VOICE_ENGINE=local` it additionally logs `voice engine: local`.
 
 The compose file uses `network_mode: host` (Linux only). This is required because WebRTC/RTSP to the camera and Frigate must behave like bare metal; bridge networking breaks media.
 
@@ -81,6 +94,49 @@ Key options (see `.env.example` for the full list):
 - `DOORMAN_HASS_TOKEN` - HA long-lived access token (notify, camera.snapshot, doorbell trigger, door-zone gate).
 - `DOORMAN_VOICE` - optional Gemini prebuilt voice; empty uses the default.
 - `DOORMAN_SNAPSHOT_RETENTION` - keep at most this many recent local snapshots (0 = keep all / no pruning).
+- `DOORMAN_VOICE_ENGINE` - `gemini` (default) or `local`. See the "Local voice engine" section for the local-only keys.
+
+## Local voice engine (`DOORMAN_VOICE_ENGINE=local`)
+
+When the engine is `local`, Doorman runs the whole conversation on the LAN instead of a
+Gemini Live session: door audio -> **STT** -> **LLM brain** (household policy, tool
+calling) -> **TTS**, with the same go2rtc talkback and the same tools (snapshot + notify).
+Both engines share the same household-policy persona; the local engine only gets a short
+addendum that keeps replies short enough for TTS.
+
+The STT services in `docker-compose.yml` are independent of each other and of `doorman` -
+bring up only what you need:
+
+`docker compose up -d whisper` # faster-whisper small.en on :10302 (recommended STT)
+
+`docker compose up -d parakeet` # Parakeet TDT 0.6B v3 on :10301 (alternative STT)
+
+The LLM brain and TTS are external to this compose file (your SGLang/Ollama instance and a
+Voicebox box); Doorman reaches them over the LAN via the `DOORMAN_LLM_*` / `DOORMAN_TTS_*`
+keys.
+
+STT: both services expose `POST /transcribe`; point `DOORMAN_STT_BASE_URL` at whichever
+is running. faster-whisper is the recommended choice for the noisy far-field door mic -
+it returns `no_speech_prob` and `language`, which Doorman uses for an anti-hallucination
+gate (`DOORMAN_LOCAL_STT_MAX_NSP`; transcriptions with a higher `no_speech_prob` are
+dropped before they reach the brain). Parakeet returns no such field and the gate is a
+no-op for it.
+
+LLM brain: any OpenAI-compatible `/chat/completions` endpoint with tool support
+(`DOORMAN_LLM_BASE_URL` / `DOORMAN_LLM_MODEL` / `DOORMAN_LLM_API_KEY`). Tunes:
+`DOORMAN_LLM_TEMPERATURE`, `DOORMAN_LLM_MAX_TOKENS`, `DOORMAN_LLM_THINK` (qwen3 think
+chain; off for snappy door replies).
+
+TTS: Voicebox serving Chatterbox (`DOORMAN_TTS_BASE_URL`, plus per-language
+profile/engine keys: `chatterbox_turbo` for EN, `chatterbox` for ES).
+
+Local-engine audio tuning (all in `.env.example` with defaults):
+`DOORMAN_LOCAL_STT_MAX_NSP` (anti-hallucination gate, see above),
+`DOORMAN_LOCAL_MIC_STALL_LIMIT_S` (the doorbell RTSP relay wedges under concurrent stream
+load and delivers audio in 4-12 s bursts; on a gap this long the ffmpeg mic pull is
+killed and reopened so the next words aren't swallowed; default 5.0 s) and
+`DOORMAN_LOCAL_MIC_MAX_REOPENS` (cap on ffmpeg reopens per interaction before the source
+is treated as dead; default 8).
 
 ## Bare-metal deploy (alternative)
 
@@ -98,6 +154,7 @@ ffmpeg must be installed. Credentials come from environment variables (same `DOO
 
 - `src/doorman.py` - orchestrator: trigger listeners + voice session + tool dispatch.
 - `src/audio_bridge.py` - Gemini Live session, mic capture, talkback, echo gate.
+- `src/voice_local.py` - local engine: STT -> LLM -> TTS pipeline, endpointer, mic capture/stall recovery.
 - `src/doorman_tools.py` - snapshot + notify tools, HA-native snapshot.
 - `src/doorman_config.py` - config loading (env > profile files > defaults).
 - `src/doorman_prompt.py` - household policy persona.
@@ -110,7 +167,7 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
 
 ## Testing / troubleshooting
 
-- Door test: `docker compose logs -f doorman` then walk up or ring the bell; watch for `TRIGGER` and `[gemini said]`.
+- Door test: `docker compose logs -f doorman` then walk up or ring the bell; watch for `TRIGGER` and, per engine, the spoken-reply line: `[gemini said]` (Gemini) or `[visitor said]` / `[doorman said]` (local engine).
 - Unit tests: run from the repo root, one at a time: `.venv/bin/python tests/test_animal_trigger.py` (all config, decision, prompt, and reaction unit tests). Same pattern for `tests/test_config.py`, `tests/test_snapshot.py`, etc.
 - Animal test: publish a synthetic Frigate cat event to the MQTT broker and watch for `TRIGGER`, `animal notify`, and `[gemini said]` lines:
   `mosquitto_pub -h <mqtt> -p 1883 -u <user> -P <pass> -t frigate/events -m '{"type":"new","after":{"id":"cat-test-1","camera":"front_doorbell","label":"cat"}}'`
@@ -123,7 +180,7 @@ A living list of features being worked on, roughly ordered by priority and group
 
 ### Voice & conversation
 
-- [ ] **Local voice engine** - a fully on-LAN voice pipeline (Parakeet STT + local LLM brain + Kokoro TTS) selectable via `DOORMAN_VOICE_ENGINE=local`. Gemini Live stays the default.
+- [x] **Local voice engine** - a fully on-LAN voice pipeline (faster-whisper or Parakeet STT + local LLM brain + Chatterbox TTS) selectable via `DOORMAN_VOICE_ENGINE=local`. Gemini Live stays the default. Built and documented above in the "Local voice engine" section; `src/voice_local.py`.
 - [ ] **Human takeover** - the owner interrupts the AI mid-session and talks to the visitor directly through the doorbell camera; the AI is put on hold and can hand the conversation back.
 - [ ] **Barge-in / streaming STT** - let the visitor interrupt a long AI reply, replacing the half-duplex turn loop with streaming recognition to cut per-turn latency.
 
