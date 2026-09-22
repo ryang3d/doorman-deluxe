@@ -55,6 +55,8 @@ async def _drive(script, *, ignored=''):
             pass
         def loop_forever(self):
             pass
+        def reconnect_delay_set(self, *a, **k):
+            pass
 
     calls = []
     real_mono = time.monotonic

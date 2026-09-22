@@ -12,3 +12,8 @@ out.wav
 
 # door snapshots (test artifacts)
 snapshots/
+tmp/
+.env.bak-*
+
+# hermes agent scratch
+.hermes/

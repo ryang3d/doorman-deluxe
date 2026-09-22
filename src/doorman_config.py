@@ -74,6 +74,15 @@ DEFAULTS = {
     'DOORMAN_LLM_MODEL': 'qwen3.8-27b',
     'DOORMAN_LLM_API_KEY': '',        # SGLang Bearer key; 'ollama' value for Ollama
     'DOORMAN_LLM_KEEP_ALIVE': '30m',  # Ollama only (ignored by SGLang, harmless)
+    # The Spark brain is a qwen3 thinking model. Its reasoning chain consumes the
+    # token budget BEFORE the spoken reply: at max_tokens=300 the production
+    # config hit finish_reason=length with EMPTY content (13s, no words). With
+    # thinking off the same model answers in 1-5s. 2026-09-17: 'liked the
+    # responses from Gemini a lot better' = this, plus sampling at temp 0 (the
+    # model's formulaic default) -> set temp 0.8 for naturalness.
+    'DOORMAN_LLM_TEMPERATURE': 0.8,   # sampling temperature for the spoken reply
+    'DOORMAN_LLM_MAX_TOKENS': 400,    # reply budget (thinking off => ample)
+    'DOORMAN_LLM_THINK': False,       # qwen3 think chain; off for snappy door replies
     # TTS = Voicebox (Chatterbox, Ryan's clone). POST {url}/generate, request/response.
     'DOORMAN_TTS_BASE_URL': 'http://127.0.0.1:17600',        # voicebox host port
     'DOORMAN_TTS_PROFILE_EN': 'ffadb2a2-cacc-4c7f-8d26-69f7c4c22246',  # 'Ryan G Cloned'
@@ -94,6 +103,57 @@ DEFAULTS = {
     'DOORMAN_KEEP_WARM_INTERVAL_S': 1500,    # repeat every 25m while warm
     'DOORMAN_LOCAL_SILENCE_MS': 700,    # endpoint: silence after speech to finalize
     'DOORMAN_LOCAL_MIN_SPEECH_MS': 300, # ignore blips shorter than this
+    # VAD aggressiveness (webrtcvad, 0-3; 3 = most aggressive, drops non-speech hard).
+    # The doorbell mic is quiet; 3 was too strict in the 2026-09-17 live test (30 s of
+    # talk flagged only 7 frames). 2 is the typical default and catches quiet speech.
+    'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 2,
+    # Mic gain (linear multiplier, applied in ffmpeg -af volume=). The door mic
+    # ambient level is ~RMS 8 of 32768, so 40 (~32 dB) brings quiet speech into
+    # the VAD/STT sweet spot. 1.0 = no gain. LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_MIC_GAIN': 40.0,
+    # Fast alimiter after the gain filter so a visitor talking close to the
+    # doorbell is capped instead of hard-clipping at the int16 ceiling. A close
+    # voice drives the substream to 32767 at 10x gain, which parakeet mangles
+    # ('I have a delivery' -> 'I haven't delivered'). limit=0.95, 5ms attack.
+    # Only applies to the LOCAL engine mic (gain>0). 'false' to disable.
+    'DOORMAN_LOCAL_MIC_LIMITER': True,
+    # Debug: when set to a path, the raw (gained) mic stream is also written to
+    # that WAV file for each local interaction, so mic tuning can be done
+    # offline against real door audio. Empty = no capture. LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_DEBUG_CAPTURE': '',
+    # Endpoint ring size (ms). Must hold a FULL utterance (~10 s) so it is not
+    # truncated to its last ~390 ms (the old ~1.1 s ring chopped every utterance
+    # to its tail word -> STT only heard "Yeah."/"Oh."). LOCAL ENGINE ONLY.
+    'DOORMAN_LOCAL_MAX_RING_MS': 10000,
+    # Minimum mean RMS for a VAD-flagged segment to count as voice. The door
+    # mic's ambient false-positives are RMS ~300-400; real voice is RMS 9000+.
+    # 500 sits between, so noise blips don't fire the endpointer. LOCAL ONLY.
+    'DOORMAN_LOCAL_MIN_RMS': 500.0,
+    # Parakeet v3 transcribes multilingual audio but does NOT label the language on
+    # its Hypothesis result (confirmed 2026-09-16: EncDecRNNTBPEModel has no
+    # language field), so the STT 'language' value is always empty. This key sets
+    # the language passed to the brain + TTS routing: 'auto' -> EN engine
+    # (default, the most common case); 'es' -> ES engine (chatterbox Multilingual)
+    # so the brain is told to reply in Spanish. Flip to 'es' for an all-Spanish
+    # household; per-utterance switching needs a language detector (out of scope).
+    'DOORMAN_LOCAL_LANG_FALLBACK': 'auto',
+    # Anti-hallucination gate for the LOCAL STT engine. When STT is Whisper, the
+    # service returns a per-utterance no_speech_prob (max over kept segments).
+    # Real door speech measures ~0.00-0.05 on this mic; ambient-noise
+    # hallucinations ~0.30+. An utterance with no_speech_prob above this value is
+    # dropped before it reaches the brain (no fake "visitor said", no idle reset).
+    # Parakeet returns no such field, so this is a no-op there. Default 0.25.
+    'DOORMAN_LOCAL_STT_MAX_NSP': 0.25,
+    # Mic-stall recovery. The doorbell's RTSP audio relay wedges under concurrent
+    # stream load and delivers audio in bursts with 4-12 s gaps (verified
+    # 2026-09-19). On a gap this long the ffmpeg pull is killed and reopened so
+    # the next words aren't swallowed. Lower = more aggressive reopens (risk:
+    # chatty reopens on brief drops); higher = fewer reopens (risk: more words
+    # lost per stall). Default 5.0 s.
+    'DOORMAN_LOCAL_MIC_STALL_LIMIT_S': 5.0,
+    # Max ffmpeg reopens per interaction before giving up (dead-source bound).
+    # Default 8.
+    'DOORMAN_LOCAL_MIC_MAX_REOPENS': 8,
     # behaviour
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     'DOORMAN_ANIMAL_BEHAVIOR': 'voice',
@@ -110,6 +170,13 @@ DEFAULTS = {
     # a Frigate person/face detection may trigger. Empty = gate disabled.
     'DOORMAN_PERSON_GATE': 'binary_sensor.front_patio_motion_zone_person_occupancy',
     'DOORMAN_PERSON_HOLD_S': 5.0,
+    # How long to wait for Frigate face recognition after a person is detected,
+    # before triggering as an unknown visitor. Frigate only lands a sub_label on
+    # a minority of front-door events (stationary person -> soft face crop), so a
+    # long wait mostly wastes time. 12 s is a good default: if recognition lands
+    # it's usually within ~5-10 s; otherwise the doorman greets as an unknown.
+    # Re-checks every 5 s (ticker), so effective worst case is ~grace + 5 s.
+    'DOORMAN_RECOGNIZE_GRACE_S': 12.0,
     # comma-separated Frigate face names to fully ignore (no greeting). Case-insensitive,
     # matched against the recognized sub_label name. Empty = ignore nobody.
     'DOORMAN_IGNORED_FACES': '',
@@ -161,6 +228,7 @@ def load():
         'DOORMAN_DOORBELL_SENSOR': 'DOORMAN_DOORBELL_SENSOR',
         'DOORMAN_PERSON_GATE': 'DOORMAN_PERSON_GATE',
         'DOORMAN_PERSON_HOLD_S': 'DOORMAN_PERSON_HOLD_S',
+        'DOORMAN_RECOGNIZE_GRACE_S': 'DOORMAN_RECOGNIZE_GRACE_S',
         'DOORMAN_DOORBELL_HOST': 'DOORMAN_DOORBELL_HOST',
         'DOORMAN_DOORBELL_USER': 'DOORMAN_DOORBELL_USER',
         'DOORMAN_DOORBELL_PASSWORD': 'DOORMAN_DOORBELL_PASSWORD',
@@ -170,6 +238,9 @@ def load():
         'DOORMAN_LLM_MODEL': 'DOORMAN_LLM_MODEL',
         'DOORMAN_LLM_API_KEY': 'DOORMAN_LLM_API_KEY',
         'DOORMAN_LLM_KEEP_ALIVE': 'DOORMAN_LLM_KEEP_ALIVE',
+        'DOORMAN_LLM_TEMPERATURE': 'DOORMAN_LLM_TEMPERATURE',
+        'DOORMAN_LLM_MAX_TOKENS': 'DOORMAN_LLM_MAX_TOKENS',
+        'DOORMAN_LLM_THINK': 'DOORMAN_LLM_THINK',
         'DOORMAN_TTS_BASE_URL': 'DOORMAN_TTS_BASE_URL',
         'DOORMAN_TTS_PROFILE_EN': 'DOORMAN_TTS_PROFILE_EN',
         'DOORMAN_TTS_PROFILE_ES': 'DOORMAN_TTS_PROFILE_ES',
@@ -181,6 +252,13 @@ def load():
         'DOORMAN_KEEP_WARM_INTERVAL_S': 'DOORMAN_KEEP_WARM_INTERVAL_S',
         'DOORMAN_LOCAL_SILENCE_MS': 'DOORMAN_LOCAL_SILENCE_MS',
         'DOORMAN_LOCAL_MIN_SPEECH_MS': 'DOORMAN_LOCAL_MIN_SPEECH_MS',
+        'DOORMAN_LOCAL_VAD_AGGRESSIVENESS': 'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
+        'DOORMAN_LOCAL_MIC_GAIN': 'DOORMAN_LOCAL_MIC_GAIN',
+        'DOORMAN_LOCAL_MIC_LIMITER': 'DOORMAN_LOCAL_MIC_LIMITER',
+        'DOORMAN_LOCAL_DEBUG_CAPTURE': 'DOORMAN_LOCAL_DEBUG_CAPTURE',
+        'DOORMAN_LOCAL_MAX_RING_MS': 'DOORMAN_LOCAL_MAX_RING_MS',
+        'DOORMAN_LOCAL_MIN_RMS': 'DOORMAN_LOCAL_MIN_RMS',
+        'DOORMAN_LOCAL_LANG_FALLBACK': 'DOORMAN_LOCAL_LANG_FALLBACK',
         'IDLE_TIMEOUT_S': 'IDLE_TIMEOUT_S', 'INTERACTION_MAX_S': 'INTERACTION_MAX_S',
         'INTERACTION_COOLDOWN_S': 'INTERACTION_COOLDOWN_S',
     }
@@ -210,11 +288,30 @@ def load():
             pass
     # integer keys (arrive as str from env/files; must be int for sleep()/range())
     for ink in ('DOORMAN_KEEP_WARM_SETTLE_S', 'DOORMAN_KEEP_WARM_INTERVAL_S',
-                'DOORMAN_LOCAL_SILENCE_MS', 'DOORMAN_LOCAL_MIN_SPEECH_MS'):
+                'DOORMAN_LOCAL_SILENCE_MS', 'DOORMAN_LOCAL_MIN_SPEECH_MS',
+                'DOORMAN_LOCAL_MAX_RING_MS'):
         try:
             merged[ink] = int(float(merged[ink]))
         except (TypeError, ValueError):
             pass
+    # float keys that arrive as str from env/files
+    for fltk in ('DOORMAN_LOCAL_MIC_GAIN', 'DOORMAN_LOCAL_MIN_RMS',
+                 'DOORMAN_RECOGNIZE_GRACE_S', 'DOORMAN_LLM_TEMPERATURE'):
+        try:
+            merged[fltk] = float(merged[fltk])
+        except (TypeError, ValueError):
+            pass
+    # LLM max_tokens: int
+    try:
+        merged['DOORMAN_LLM_MAX_TOKENS'] = int(merged['DOORMAN_LLM_MAX_TOKENS'])
+    except (TypeError, ValueError):
+        pass
+    # LLM think chain: bool (qwen3 thinking; off = snappy spoken replies)
+    merged['DOORMAN_LLM_THINK'] = str(
+        merged['DOORMAN_LLM_THINK']).strip().lower() in ('true', '1', 'yes', 'on')
+    # Local-mic limiter: bool (caps close-voice peaks instead of hard-clipping)
+    merged['DOORMAN_LOCAL_MIC_LIMITER'] = str(
+        merged.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
     # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.

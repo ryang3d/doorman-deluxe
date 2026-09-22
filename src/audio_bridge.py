@@ -104,6 +104,15 @@ class SpeakingState:
         async with self.lock:
             self._active = False
 
+    async def end_speech(self):
+        """Local-engine path: called once the AI's queued TTS has finished PLAYING.
+        Reset the sticky active flag and refresh the last-active timestamp to now,
+        so the tail window (echo gate) starts from playback end, not queue time.
+        The Gemini path uses mark_active/mark_idle in its receive loop instead."""
+        async with self.lock:
+            self._active = False
+            self._last_active = __import__('time').monotonic()
+
     async def muted(self):
         """True if mic should be muted (AI speaking now or within tail window)."""
         import time
@@ -218,6 +227,53 @@ def _detect_audio_args(content_type: str, head: bytes) -> list:
     return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
 
 
+async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None, limiter=False):
+    """Open the visitor-mic RTSP via ffmpeg -> 16k s16le on stdout, with the proven
+    3x probe-retry (go2rtc cold sources deliver no data briefly). Returns the
+    subprocess or None.
+
+    gain: optional linear volume multiplier applied in ffmpeg (e.g. 40.0 = ~32 dB).
+    The doorbell mic is very quiet (ambient ~RMS 8 of 32768); without gain the
+    VAD/STT barely register a speaker. None = no gain (Gemini path unchanged).
+    limiter: if True (and gain is set), append a fast alimiter after the volume so
+    loud door voices are capped instead of hard-clipping at the int16 ceiling.
+    A visitor talking close to the doorbell drives the raw substream to the
+    int16 ceiling at 10x gain, which parakeet then mangles ('I have a delivery'
+    -> 'I haven't delivered'). The limiter caps the peak (~0.95) while leaving
+    quiet voices and ambient untouched. Verified on the live substream:
+    volume=10 alone -> peak 32767 (CLIPS); +alimiter -> peak ~31130 (capped)."""
+    args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-rtsp_transport', 'tcp',
+            '-i', mic_rtsp,
+            '-vn', '-map', '0:a:0']
+    if gain:
+        af = 'volume=%s' % gain
+        if limiter:
+            af += ',alimiter=limit=0.95:attack=5:release=50:level=false'
+        args += ['-af', af]
+    args += ['-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+            '-f', 's16le', 'pipe:1']
+    proc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            probe = await asyncio.wait_for(proc.stdout.read(4), timeout=probe_timeout)
+            if probe:
+                return proc
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+        if proc is not None:
+            try: proc.kill(); await proc.wait()
+            except Exception: pass
+        proc = None
+        await asyncio.sleep(1)
+    return None
+
+
 async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None):
     """Read the visitor mic from go2rtc's front_doorbell_sub RELAY and forward to
     Gemini as pcm16 16k mono.
@@ -244,55 +300,11 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
     log.info("mic: using go2rtc RTSP relay source %s", mic_rtsp.split('@')[-1])
     from google.genai import types
 
-    proc = None
-    last_err = None
-    for attempt in range(1, 4):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                'ffmpeg', '-hide_banner', '-loglevel', 'error',
-                '-rtsp_transport', 'tcp',
-                '-i', mic_rtsp,
-                '-vn', '-map', '0:a:0', '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                '-f', 's16le', 'pipe:1',
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            # Probe: confirm audio is actually flowing. go2rtc can spin up a cold
-            # source on first connect and briefly deliver no data -> retry.
-            probe = await asyncio.wait_for(proc.stdout.read(4), timeout=15)
-            if not probe:
-                last_err = "no audio data on probe"
-                try:
-                    proc.kill(); await proc.wait()
-                except Exception:
-                    pass
-                proc = None
-                log.info("mic: probe attempt %d got no audio; retrying", attempt)
-                await asyncio.sleep(1)
-                continue
-            log.info("mic: RTSP audio open (attempt %d)", attempt)
-            break
-        except asyncio.TimeoutError:
-            last_err = "cold-stream probe timeout"
-            if proc is not None:
-                try:
-                    proc.kill(); await proc.wait()
-                except Exception:
-                    pass
-            proc = None
-            log.info("mic: probe attempt %d timed out; retrying", attempt)
-            await asyncio.sleep(1)
-        except Exception as e:
-            last_err = str(e)
-            if proc is not None:
-                try:
-                    proc.kill(); await proc.wait()
-                except Exception:
-                    pass
-            proc = None
-            log.warning("mic: probe attempt %d failed: %s", attempt, e)
-            await asyncio.sleep(1)
+    proc = await open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3)
     if proc is None:
-        log.warning("mic: RTSP audio failed to open after retries: %s", last_err)
+        log.warning("mic: RTSP audio failed to open after retries")
         return
+    log.info("mic: RTSP audio open")
 
     _fbits = []
 

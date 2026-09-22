@@ -391,12 +391,29 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         except Exception:
             pass
 
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        # Fresh connect (rc=0). MUST re-subscribe here: Paho auto-reconnects the
+        # TCP socket after a network blip (e.g. 2026-09-18 10:01 HA-box outage
+        # dropped the broker link silently), but with a clean session the broker
+        # forgets the subscription and Paho does NOT re-subscribe on its own.
+        # Without this, every Frigate event after any blip is delivered to no one
+        # and the doorman goes deaf (observed: 4 person events 08:02-08:08 UTC,
+        # zero 'person seen' log lines).
+        if reason_code == 0:
+            client.subscribe(FRIGATE_TOPIC)
+            log.info("mqtt connected, (re)subscribed to %s", FRIGATE_TOPIC)
+
+    def on_disconnect(client, userdata, flags, reason_code, properties=None):
+        log.warning("mqtt disconnected (rc=%s); auto-reconnect will re-subscribe", reason_code)
+
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(user, pw)
     client.on_message = on_message
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.subscribe(FRIGATE_TOPIC)
-    log.info("subscribed to %s", FRIGATE_TOPIC)
+    # subscription happens in on_connect (fires on first CONNACK inside loop_forever)
     import threading
     def run():
         client.loop_forever()
@@ -405,7 +422,10 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
     import time
     # state: event_id -> {'new_ts': monotonic, 'recognized': name-or-None, 'triggered': bool}
     pending = {}
-    RECOGNIZE_GRACE_S = 25.0   # how long to wait for recognition after 'new'
+    # How long to wait for Frigate face recognition after a person is detected,
+    # before triggering as an unknown visitor. Configurable via
+    # DOORMAN_RECOGNIZE_GRACE_S (default 12 s; was hardcoded 25 s).
+    RECOGNIZE_GRACE_S = _dc.load().get('DOORMAN_RECOGNIZE_GRACE_S', 12.0)
     last_trigger_ts = 0.0
     fast_fired = set()   # fast-path event_ids already triggered (person/face hold re-checks on updates)
 
@@ -419,9 +439,84 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                  gate.in_seconds(now), gate.hold_s, label)
         return True
 
+    async def _decide(event_id, now, etype=None):
+        """Fire the trigger for a pending event once it's settled.
+
+        Settled = recognized (name known), event ended, OR the recognition grace
+        has elapsed. Called from both the Frigate-event path and the periodic
+        ticker, so the trigger fires at grace_ms even when Frigate stops sending
+        updates for a stationary person (the 2026-09-17 '78 s greeting' bug:
+        the trigger used to wait for Frigate's next event, which for a stationary
+        person could be a minute or more away).
+        """
+        nonlocal last_trigger_ts
+        p = pending.get(event_id)
+        if p is None or p.get('triggered'):
+            return
+        label = p.get('label', 'person')
+        elapsed = now - p['new_ts']
+        settled = (p['name'] is not None) or (etype == 'end') \
+            or (elapsed >= RECOGNIZE_GRACE_S) \
+            or (label in ANIMAL_LABELS)
+        if not settled:
+            return
+        if gate_blocked(label, now):
+            # not held long enough on the gate; a later update/end/tick can fire
+            return
+        # Ignored faces: a recognized name on the ignore list gets NO greeting.
+        if p['name'] and p['name'].strip().lower() in IGNORED_FACES:
+            log.info("ignored face %s at the door; no greeting", p['name'])
+            p['triggered'] = True
+            del pending[event_id]
+            return
+        p['triggered'] = True
+        if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
+            log.info("trigger debounced (cooldown); recognized=%s", p['name'])
+            return
+        last_trigger_ts = now
+        p['fired'] = True
+        recognized = p['name']
+        log.info("TRIGGER: %s at the door (recognized=%s)", label, recognized)
+        trigger_text = doorman_prompt.interaction_trigger_text(
+            recognized_name=recognized, doorbell_pressed=False, label=label)
+        prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
+        await handle_event(prompt, trigger_text, {'label': label, 'name': recognized})
+
+    # Ticker so the trigger decision re-checks even when Frigate goes quiet.
+    # Frigate only pushes events when a tracked object changes; for a stationary
+    # person that can be a minute or more. Previously the trigger only ran on a
+    # Frigate event, so a settled event (recognition grace elapsed) sat until
+    # Frigate's next update/end -- the 2026-09-17 '78 s greeting' bug. Now a
+    # background task drops a tick sentinel into the same queue every TICK_S and
+    # the loop re-evaluates pending events on it. No Frigate event is dropped.
+    TICK_S = 5.0
+
+    async def _ticker():
+        while True:
+            await asyncio.sleep(TICK_S)
+            await events.put({'tick': True})
+
+    asyncio.ensure_future(_ticker())
+
     while True:
         ev = await events.get()
-        after = ev.get('after', {})
+        if not isinstance(ev, dict):
+            # malformed payload (non-dict); skip, never crash on one bad message
+            continue
+        if ev.get('tick'):
+            now = time.monotonic()
+            for eid in list(pending.keys()):
+                await _decide(eid, now)
+            # expire stale pending entries
+            expired = [eid for eid, p in pending.items()
+                       if p.get('triggered', False) and (now - p['new_ts']) > 60]
+            for eid in expired:
+                del pending[eid]
+            continue
+        after = ev.get('after') or ev  # tolerate null/absent 'after' (fields at top level)
+        if not isinstance(after, dict):
+            log.warning("frigate event: non-dict payload skipped: %r", str(ev)[:120])
+            continue
         camera = after.get('camera', '')
         label = after.get('label', '')
         etype = ev.get('type', '')
@@ -470,7 +565,7 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         if etype == 'new':
             # start a pending track for this visitor
             if event_id and event_id not in pending:
-                pending[event_id] = {'new_ts': now, 'name': name}
+                pending[event_id] = {'new_ts': now, 'name': name, 'label': label}
                 log.info("person seen (event %s), waiting for recognition...", event_id[:12])
         elif etype == 'update':
             if event_id in pending:
@@ -486,39 +581,7 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                 log.info("event %s ended (name=%s)", event_id[:12], pending[event_id]['name'])
 
         # ---- trigger decision for a settled event (fire exactly once per event id) ----
-        if event_id in pending:
-            p = pending[event_id]
-            elapsed = now - p['new_ts']
-            settled = (p['name'] is not None) or (etype == 'end') \
-                or (elapsed >= RECOGNIZE_GRACE_S) \
-                or (label in ANIMAL_LABELS)
-            if settled and not p.get('triggered'):
-                if gate_blocked(label, now):
-                    # not settled enough on the gate; do NOT mark triggered -
-                    # a later update/end (while held) can still fire this event
-                    continue
-                # Ignored faces: a recognized name on the ignore list gets NO greeting.
-                # p['name'] is known at settle time (recognized, or settled on end/grace).
-                # Mark triggered + drop so no later update/end re-fires. Unrecognized
-                # visitors (p['name'] is None) are unaffected.
-                if p['name'] and p['name'].strip().lower() in IGNORED_FACES:
-                    log.info("ignored face %s at the door; no greeting", p['name'])
-                    p['triggered'] = True
-                    del pending[event_id]
-                    continue
-                p['triggered'] = True
-                # fire unless debounced by cooldown
-                if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
-                    log.info("trigger debounced (cooldown); recognized=%s", p['name'])
-                else:
-                    last_trigger_ts = now
-                    p['fired'] = True
-                    recognized = p['name']
-                    log.info("TRIGGER: %s at the door (recognized=%s)", label, recognized)
-                    trigger_text = doorman_prompt.interaction_trigger_text(
-                        recognized_name=recognized, doorbell_pressed=False, label=label)
-                    prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
-                    await handle_event(prompt, trigger_text, {'label': label, 'name': recognized})
+        await _decide(event_id, now, etype)
 
         # expire stale pending entries
         expired = [eid for eid, p in pending.items()
