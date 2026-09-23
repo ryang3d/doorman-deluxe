@@ -591,6 +591,31 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
 
 
 # ---------------------------------------------------------------- doorbell-press trigger (HA WebSocket)
+def _make_ws_backoff(base_s=5.0, max_s=60.0):
+    """Exponential backoff + jitter for HA WebSocket reconnects.
+
+    HA auto-bans the source IP on rapid connection churn (returns 403 on the WS
+    upgrade and on /api/states). A flat "reconnect in 5s" loop hammers the ban
+    and keeps it warm, so the feeder never recovers. This returns (delay, reset):
+    delay() yields the next sleep (base*2**n capped at max_s, jittered between
+    50% and 100% of the cap so we never retry instantly and avoid thundering),
+    and reset() clears the counter after a successful connect so a long-lived
+    link keeps the next retry short.
+    """
+    import random as _random
+    _state = {'n': 0}
+
+    def delay():
+        cap = min(max_s, base_s * (2 ** _state['n']))
+        _state['n'] += 1
+        return _random.uniform(0.5 * cap, cap)
+
+    def reset():
+        _state['n'] = 0
+
+    return delay, reset
+
+
 async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_pressed'):
     """Subscribe to HA state_changed events and trigger Doorman when the doorbell
     sensor transitions to 'on'.
@@ -616,6 +641,10 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
     # doorbell_event_listener -> asyncio.gather -> amain -> process exit -> container
     # restart (RestartCount incremented every interaction). Now: longer keepalive
     # timeouts AND a reconnect loop so a drop logs + re-subscribes instead of dying.
+    # Reconnect backoff + jitter: HA auto-bans this source IP on rapid connection
+    # churn (403 on the WS upgrade / /api/states). A flat 5s retry loop hammers the
+    # ban and keeps it warm; exponential backoff lets a brief ban decay first.
+    _backoff_delay, _backoff_reset = _make_ws_backoff()
     while True:
         try:
             async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
@@ -634,6 +663,7 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
                 if not sub.get('success'):
                     raise RuntimeError("subscribe_events failed: %s" % sub)
                 log.info("doorbell listener subscribed to HA state_changed (sensor=%s)", sensor)
+                _backoff_reset()
 
                 while True:
                     raw = await ws.recv()
@@ -666,11 +696,13 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
         except _aio.CancelledError:
             raise
         except websockets.ConnectionClosed as e:
-            log.warning("HA WS doorbell listener dropped (%s); reconnecting in 3s", e)
-            await _aio.sleep(3)
+            _d = _backoff_delay()
+            log.warning("HA WS doorbell listener dropped (%s); reconnecting in %.0fs", e, _d)
+            await _aio.sleep(_d)
         except Exception as e:
-            log.error("HA WS doorbell listener error (%s); reconnecting in 5s", e)
-            await _aio.sleep(5)
+            _d = _backoff_delay()
+            log.error("HA WS doorbell listener error (%s); reconnecting in %.0fs", e, _d)
+            await _aio.sleep(_d)
 
 
 # ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
@@ -726,6 +758,9 @@ async def doorzone_gate_listener(gate, sensor=None):
     if not token:
         log.warning("door-zone gate: no HASS_TOKEN, gate stays unsatisfied")
         return
+    # Reconnect backoff + jitter: same HA IP-ban dynamics as the doorbell listener.
+    # A flat 5s loop hammers the ban and the gate hold clock never advances.
+    _g_delay, _g_reset = _make_ws_backoff()
     while True:
         try:
             async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
@@ -745,6 +780,7 @@ async def doorzone_gate_listener(gate, sensor=None):
                 # Seed the hold from the CURRENT state so a sensor already 'on'
                 # before this (re)connect still counts down (no state change yet).
                 await _seed_gate_from_state(hass_http, sensor, token, gate)
+                _g_reset()
                 while True:
                     raw = await ws.recv()
                     try:
@@ -767,11 +803,13 @@ async def doorzone_gate_listener(gate, sensor=None):
         except _aio.CancelledError:
             raise
         except websockets.ConnectionClosed as e:
-            log.warning("door-zone gate WS dropped (%s); reconnecting in 3s", e)
-            await _aio.sleep(3)
+            _d = _g_delay()
+            log.warning("door-zone gate WS dropped (%s); reconnecting in %.0fs", e, _d)
+            await _aio.sleep(_d)
         except Exception as e:
-            log.error("door-zone gate WS error (%s); reconnecting in 5s", e)
-            await _aio.sleep(5)
+            _d = _g_delay()
+            log.error("door-zone gate WS error (%s); reconnecting in %.0fs", e, _d)
+            await _aio.sleep(_d)
 
 
 # ---------------------------------------------------------------- main / CLI
