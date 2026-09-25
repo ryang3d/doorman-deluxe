@@ -575,6 +575,43 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
         await asyncio.sleep(poll_s)
 
 
+async def ring_settle_wait(cfg, press_ts, settle_s=None, log=None):
+    """Before opening the two-way backchannel, wait out the AD410's post-press
+    'blue' window. The camera wedges its RTSP server if a #backchannel=1 session
+    is opened within ~7-8s of a button press (verified 2026-09-25 via a manual
+    PWA A/B test: open the twoway link during the blue ring-light = crash; wait
+    for it to return to green = no crash). Opening after the window is safe.
+
+    press_ts: monotonic time of the most recent doorbell 'on' edge (None if no
+    press has been tracked, e.g. a pure motion trigger with no button press).
+    settle_s: total post-press window to clear before opening backchannel
+    (default 12s = measured 7-8s + safety margin; DOORMAN_RING_SETTLE_S).
+
+    Sleeps the REMAINDER of the window measured from the press, so if several
+    seconds already elapsed between the press and this call (frigate detection
+    + recognition grace + camera-health gate), it waits less. No-op when no press
+    is recent. This is why person-only rings that already took >12s to reach the
+    backchannel were historically clean - this makes the press-rings behave the
+    same instead of relying on the 3x connect-retry to win by luck."""
+    import time
+    if log is None:
+        log = logging.getLogger('audio_bridge')
+    if press_ts is None:
+        return
+    if settle_s is None:
+        settle_s = float(cfg.get('DOORMAN_RING_SETTLE_S', 12.0))
+    elapsed = time.monotonic() - press_ts
+    if elapsed >= settle_s:
+        log.debug("ring-settle: %.1fs since press >= %.0fs window; opening backchannel",
+                  elapsed, settle_s)
+        return
+    wait = settle_s - elapsed
+    log.info("ring-settle: doorbell pressed %.1fs ago; waiting %.1fs for the "
+             "post-press window to clear before opening the backchannel",
+             elapsed, wait)
+    await asyncio.sleep(wait)
+
+
 class GeminiAudioTrack(AudioStreamTrack):
     """Sendonly track. Pulls pcm16 24k chunks from queue, upsamples to 48k for opus.
     recv() is NON-BLOCKING: it drains whatever 24k audio is queued, resamples it,

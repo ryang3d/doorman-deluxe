@@ -24,6 +24,14 @@ import doorman_tools
 
 log = logging.getLogger("doorman")
 
+# Most recent doorbell off->on press edge, in time.monotonic(). Set by
+# doorbell_press_tracker (always-on HA WS listener). run_interaction reads it to
+# wait out the AD410's post-press "blue" window before opening the backchannel.
+_DOORBELL_PRESS: dict = {'ts': None}
+
+def last_doorbell_press_ts():
+    return _DOORBELL_PRESS['ts']
+
 # Frigate MQTT config (from doorman_config: env > profile files > defaults)
 import doorman_config as _dc
 _CFG = _dc.load()
@@ -171,6 +179,14 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         # one-shot RTSP i/o timeout while the camera's audio subsystem settles.
         # The backchannel streams fine immediately afterward (verified by direct
         # pull), so retry with a settle delay before giving up on the greeting.
+        # RING-SETTLE WAIT: never open the backchannel inside the AD410's
+        # ~7-8s post-press "blue" window (verified 2026-09-25: opening bc=1
+        # during that window wedges the camera's RTSP server; after it is safe).
+        # If a press was tracked within the window, wait out the remainder.
+        try:
+            await ab.ring_settle_wait(cfg, last_doorbell_press_ts(), log=log)
+        except Exception as e:
+            log.warning("ring-settle wait error: %s", str(e)[:80])
         pc = ws = mic = keep_task = recv_holder = None
         for attempt in range(3):
             try:
@@ -706,6 +722,75 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
 
 
 # ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
+async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
+    """Always-on listener that records each doorbell off->on press edge (monotonic
+    time) into _DOORBELL_PRESS. run_interaction reads that timestamp to wait out
+    the AD410's ~7-8s post-press "blue" window before opening the backchannel
+    (verified 2026-09-25: opening bc=1 during the blue window wedges the camera's
+    RTSP server; after the window it is safe).
+
+    Runs in ALL trigger modes (unlike doorbell_event_listener, which only runs in
+    doorbell/hybrid modes) because press-rings can trigger a Doorman interaction
+    through the person/motion path too. Event-driven over HA WS so it carries no
+    IP-ban polling risk. If HASS_TOKEN is missing it exits quietly."""
+    import websockets
+    import time as _time
+    cfg = _dc.load()
+    sensor = sensor or (cfg.get('DOORMAN_DOORBELL_SENSOR') or '').strip()
+    hass_ws = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
+    token = cfg.get('HASS_TOKEN') or ''
+    if not token:
+        log.info("press tracker: no HASS_TOKEN; skipping (ring-settle wait disabled)")
+        return
+    _backoff_delay, _backoff_reset = _make_ws_backoff()
+    while True:
+        try:
+            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
+                                          ping_interval=30, ping_timeout=60) as ws:
+                msg = json.loads(await ws.recv())
+                if msg.get('type') != 'auth_required':
+                    raise RuntimeError("HA websocket did not ask for auth")
+                await ws.send(json.dumps({'type': 'auth', 'access_token': token}))
+                auth = json.loads(await ws.recv())
+                if auth.get('type') != 'auth_ok':
+                    raise RuntimeError("HA websocket auth failed: %s" % auth)
+                await ws.send(json.dumps({"id": 1, "type": "subscribe_events",
+                                          "event_type": "state_changed",
+                                          "event_filter": {"entity_id": sensor}}))
+                sub = json.loads(await ws.recv())
+                if not sub.get('success'):
+                    raise RuntimeError("subscribe failed")
+                log.info("press tracker subscribed to %s", sensor)
+                _backoff_reset()
+                while True:
+                    raw = await ws.recv()
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    if msg.get('type') == 'event':
+                        data = msg.get('event', {}).get('data', {})
+                        if data.get('entity_id') != sensor:
+                            continue
+                        n = data.get('new_state', {}).get('state')
+                        o = data.get('old_state', {}).get('state')
+                        if n == 'on' and o != 'on':
+                            _DOORBELL_PRESS['ts'] = _time.monotonic()
+                            log.info("press tracker: doorbell press edge recorded")
+                    elif msg.get('type') == 'ping':
+                        await ws.send(json.dumps({'type': 'pong', 'id': msg.get('id')}))
+        except asyncio.CancelledError:
+            raise
+        except websockets.ConnectionClosed as e:
+            _d = _backoff_delay()
+            log.warning("press tracker WS dropped (%s); reconnecting in %.0fs", e, _d)
+            await asyncio.sleep(_d)
+        except Exception as e:
+            _d = _backoff_delay()
+            log.warning("press tracker WS error (%s); reconnecting in %.0fs", str(e)[:80], _d)
+            await asyncio.sleep(_d)
+
+
 async def _seed_gate_from_state(hass_http, sensor, token, gate):
     """One-shot GET /api/states/{sensor} to seed the gate hold on (re)connect.
 
@@ -880,6 +965,9 @@ async def amain(args):
         log.info("interaction done")
 
     tasks = []
+    # Always-on: record doorbell press edges so run_interaction can wait out the
+    # AD410's post-press window before opening the backchannel (all trigger modes).
+    tasks.append(doorbell_press_tracker(sensor=doorbell_sensor))
     if trigger_mode in ('doorbell', 'hybrid'):
         tasks.append(doorbell_event_listener(handle_event, sensor=doorbell_sensor))
     if trigger_mode in ('person', 'hybrid'):
