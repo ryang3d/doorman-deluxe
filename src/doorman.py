@@ -755,8 +755,7 @@ async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
                 if auth.get('type') != 'auth_ok':
                     raise RuntimeError("HA websocket auth failed: %s" % auth)
                 await ws.send(json.dumps({"id": 1, "type": "subscribe_events",
-                                          "event_type": "state_changed",
-                                          "event_filter": {"entity_id": sensor}}))
+                                          "event_type": "state_changed"}))
                 sub = json.loads(await ws.recv())
                 if not sub.get('success'):
                     raise RuntimeError("subscribe failed")
