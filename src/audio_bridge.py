@@ -575,41 +575,78 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
         await asyncio.sleep(poll_s)
 
 
-async def ring_settle_wait(cfg, press_ts, settle_s=None, log=None):
+# Post-press "blue window" state (single source of truth). Lives HERE (not in
+# doorman.py) because doorman.py can be loaded twice: the entry point runs it as
+# __main__ while voice_local does `import doorman`, giving two module instances
+# with two dicts. The tracker (doorman.py) writes via record_doorbell_press()/
+# record_doorbell_release(); ring_settle_wait() reads this same global.
+_PRESS_EDGE: dict = {'ts_on': None, 'ts_off': None}
+
+def record_doorbell_press(ts: float | None = None):
+    import time as _time
+    _PRESS_EDGE['ts_on'] = ts if ts is not None else _time.monotonic()
+    # a new press invalidates a release recorded before it
+    off = _PRESS_EDGE['ts_off']
+    on = _PRESS_EDGE['ts_on']
+    if off is not None and on is not None and off < on:
+        _PRESS_EDGE['ts_off'] = None
+
+def record_doorbell_release(ts: float | None = None):
+    import time as _time
+    _PRESS_EDGE['ts_off'] = ts if ts is not None else _time.monotonic()
+
+def last_doorbell_press_ts():
+    return _PRESS_EDGE['ts_on']
+
+async def ring_settle_wait(cfg, settle_s=None, log=None):
     """Before opening the two-way backchannel, wait out the AD410's post-press
     'blue' window. The camera wedges its RTSP server if a #backchannel=1 session
-    is opened within ~7-8s of a button press (verified 2026-09-25 via a manual
-    PWA A/B test: open the twoway link during the blue ring-light = crash; wait
-    for it to return to green = no crash). Opening after the window is safe.
+    is opened while the doorbell is still in 2-way-voice mode (verified 2026-09-25
+    via a manual PWA A/B test: open the twoway link while the ring light is blue
+    = crash; after it returns to green = no crash; blue lasts ~7-8s after a tap).
+    The blue state is tied to the button's audio session, not our RTSP session,
+    so it is driven by the HA doorbell-pressed sensor: open the backchannel only
+    AFTER (a) the minimum post-press window (DOORMAN_RING_SETTLE_S, default 12s
+    = measured 7-8s + margin) has elapsed AND (b) the sensor has returned to
+    'off' (release edge recorded by doorbell_press_tracker). A still-held button
+    keeps waiting; a missed release edge is bounded by DOORMAN_RING_SETTLE_MAX_S
+    (default 30s, total from the press edge) so the greeting can't be starved.
 
-    press_ts: monotonic time of the most recent doorbell 'on' edge (None if no
-    press has been tracked, e.g. a pure motion trigger with no button press).
-    settle_s: total post-press window to clear before opening backchannel
-    (default 12s = measured 7-8s + safety margin; DOORMAN_RING_SETTLE_S).
-
-    Sleeps the REMAINDER of the window measured from the press, so if several
-    seconds already elapsed between the press and this call (frigate detection
-    + recognition grace + camera-health gate), it waits less. No-op when no press
-    is recent. This is why person-only rings that already took >12s to reach the
-    backchannel were historically clean - this makes the press-rings behave the
-    same instead of relying on the 3x connect-retry to win by luck."""
+    No-op when no press has been tracked (pure motion trigger with no button
+    press), or when the press is already older than the max cap. Reads
+    _PRESS_EDGE directly, so the dual-import of doorman.py can't split state."""
     import time
     if log is None:
         log = logging.getLogger('audio_bridge')
+    press_ts = _PRESS_EDGE['ts_on']
     if press_ts is None:
         return
     if settle_s is None:
         settle_s = float(cfg.get('DOORMAN_RING_SETTLE_S', 12.0))
-    elapsed = time.monotonic() - press_ts
-    if elapsed >= settle_s:
-        log.debug("ring-settle: %.1fs since press >= %.0fs window; opening backchannel",
-                  elapsed, settle_s)
+    max_s = float(cfg.get('DOORMAN_RING_SETTLE_MAX_S', 30.0))
+    now = time.monotonic()
+    if now - press_ts >= max_s:
+        log.debug("ring-settle: %.1fs since press >= %.0fs cap; opening backchannel",
+                  now - press_ts, max_s)
         return
-    wait = settle_s - elapsed
-    log.info("ring-settle: doorbell pressed %.1fs ago; waiting %.1fs for the "
-             "post-press window to clear before opening the backchannel",
-             elapsed, wait)
-    await asyncio.sleep(wait)
+    log.info("ring-settle: doorbell pressed %.1fs ago; waiting for the post-press "
+             "window to clear (min %.0fs, sensor released, max %.0fs) before "
+             "opening the backchannel", now - press_ts, settle_s, max_s)
+    deadline = press_ts + max_s
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            log.warning("ring-settle: %.0fs cap reached without sensor release; "
+                        "opening backchannel anyway", max_s)
+            return
+        elapsed = now - press_ts
+        off = _PRESS_EDGE['ts_off']
+        released = off is not None and off >= press_ts
+        if elapsed >= settle_s and released:
+            log.info("ring-settle: window clear (%.1fs since press, sensor released "
+                     "%.1fs ago); opening backchannel", elapsed, now - off)
+            return
+        await asyncio.sleep(0.5)
 
 
 class GeminiAudioTrack(AudioStreamTrack):

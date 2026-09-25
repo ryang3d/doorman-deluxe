@@ -24,14 +24,6 @@ import doorman_tools
 
 log = logging.getLogger("doorman")
 
-# Most recent doorbell off->on press edge, in time.monotonic(). Set by
-# doorbell_press_tracker (always-on HA WS listener). run_interaction reads it to
-# wait out the AD410's post-press "blue" window before opening the backchannel.
-_DOORBELL_PRESS: dict = {'ts': None}
-
-def last_doorbell_press_ts():
-    return _DOORBELL_PRESS['ts']
-
 # Frigate MQTT config (from doorman_config: env > profile files > defaults)
 import doorman_config as _dc
 _CFG = _dc.load()
@@ -184,7 +176,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         # during that window wedges the camera's RTSP server; after it is safe).
         # If a press was tracked within the window, wait out the remainder.
         try:
-            await ab.ring_settle_wait(cfg, last_doorbell_press_ts(), log=log)
+            await ab.ring_settle_wait(cfg, log=log)
         except Exception as e:
             log.warning("ring-settle wait error: %s", str(e)[:80])
         pc = ws = mic = keep_task = recv_holder = None
@@ -723,10 +715,12 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
 
 # ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
 async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
-    """Always-on listener that records each doorbell off->on press edge (monotonic
-    time) into _DOORBELL_PRESS. run_interaction reads that timestamp to wait out
-    the AD410's ~7-8s post-press "blue" window before opening the backchannel
-    (verified 2026-09-25: opening bc=1 during the blue window wedges the camera's
+    """Always-on listener that records each doorbell press (off->on) AND release
+    (on->off) edge into audio_bridge._PRESS_EDGE (single source of truth, so the
+    dual-import of doorman.py can't split state). run_interaction's
+    ring_settle_wait() opens the backchannel only after the sensor has returned
+    to 'off' AND the minimum post-press window has elapsed (verified 2026-09-25:
+    opening bc=1 while the AD410 ring light is still blue wedges the camera's
     RTSP server; after the window it is safe).
 
     Runs in ALL trigger modes (unlike doorbell_event_listener, which only runs in
@@ -774,8 +768,11 @@ async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
                         n = data.get('new_state', {}).get('state')
                         o = data.get('old_state', {}).get('state')
                         if n == 'on' and o != 'on':
-                            _DOORBELL_PRESS['ts'] = _time.monotonic()
+                            ab.record_doorbell_press()
                             log.info("press tracker: doorbell press edge recorded")
+                        elif n == 'off' and o == 'on':
+                            ab.record_doorbell_release()
+                            log.info("press tracker: doorbell release edge recorded")
                     elif msg.get('type') == 'ping':
                         await ws.send(json.dumps({'type': 'pong', 'id': msg.get('id')}))
         except asyncio.CancelledError:

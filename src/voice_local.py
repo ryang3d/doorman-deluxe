@@ -550,8 +550,7 @@ async def run_interaction_local(system_prompt, trigger_text,
     # window wedges the camera's RTSP server; after it is safe). A press tracked
     # within the window delays the open by the remainder; no press = open now.
     try:
-        import doorman as _d2
-        await ab.ring_settle_wait(cfg, _d2.last_doorbell_press_ts(), log=log)
+        await ab.ring_settle_wait(cfg, log=log)
     except Exception as e:
         log.warning("ring-settle wait error: %s", str(e)[:80])
     pc = ws = mic = keep_task = recv_holder = None
