@@ -599,25 +599,30 @@ def last_doorbell_press_ts():
     return _PRESS_EDGE['ts_on']
 
 async def ring_settle_wait(cfg, settle_s=None, log=None):
-    """Before opening the two-way backchannel, wait out the AD410's 'blue'
-    2-way-voice window. The camera wedges its RTSP server if a #backchannel=1
-    session is opened while the ring light is still blue; after it returns to
-    green the same open is clean. Two A/B results pin down the window's shape:
-    - manual PWA test (2026-09-25, brief tap): blue lasts ~7-8s after the
-      button is released; opening the twoway link during blue = crash, after =
-      clean.
-    - 23:14 ring test (2026-09-25, 10s button hold): opening 12.3s after the
-      PRESS but only 2.3s after the RELEASE still crashed. So the window is
-      anchored to the RELEASE edge, not the press: blue lasts ~7-8s after the
-      button is let go, regardless of hold duration.
+    """Before opening the two-way backchannel, make sure the AD410 is in a state
+    where a #backchannel=1 dial will not crash it.
 
-    Behavior: open the backchannel at RELEASE + DOORMAN_RING_SETTLE_S (default
-    12s = measured 7-8s + margin). If no release edge is seen yet (button still
-    held, or edge missed), wait for it up to DOORMAN_RING_SETTLE_MAX_S (default
-    30s, measured from the press edge), then open anyway so the greeting can't
-    be starved. If no press edge has been tracked when this is called, wait up
-    to DOORMAN_RING_SETTLE_PRESS_GRACE_S (default 5s) for the HA WS press edge
-    of the same ring to arrive (it usually lands within hundreds of ms of the
+    Mechanism (2026-09-26, ring test 12): the AD410 degrades its MAIN RTSP
+    stream during/after the ring. The main stream's i/o timeout showed up 6.4s
+    into a 10s button hold - BEFORE the backchannel was dialed - and it kept
+    crash-looping until ~36s after release. Dialing bc=1 while the main stream
+    is wedged is what crashes the camera; the "blue" ring light is just the main
+    stream being degraded. So the gate is two-stage:
+
+    1. Release floor: wait for the button-release edge, then hold at least
+       DOORMAN_RING_SETTLE_S (default 12s) after it. This is the fixed blue-window
+       guarantee for short taps (blue lasts ~7-8s after release, so release+12s
+       is safely past it).
+    2. Recovery poll: after the floor, poll Frigate's camera_fps/process_fps on
+       the main stream until it is delivering frames again (>=
+       DOORMAN_RING_SETTLE_MIN_FPS, default 3.0; healthy is ~5.1). This absorbs
+       long holds where the main stream stays degraded longer than the fixed
+       window. Cap the whole wait at DOORMAN_RING_SETTLE_MAX_S (default 45s)
+       after the release edge so the greeting is never starved.
+
+    If no press edge has been tracked when this is called, wait up to
+    DOORMAN_RING_SETTLE_PRESS_GRACE_S (default 5s) for the HA WS press edge of
+    the same ring to arrive (it usually lands within hundreds of ms of the
     Frigate person trigger that got us here); a pure motion ring with no button
     press pays that one small delay, then opens. Reads _PRESS_EDGE directly, so
     the dual-import of doorman.py can't split state."""
@@ -636,55 +641,57 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
             return
     if settle_s is None:
         settle_s = float(cfg.get('DOORMAN_RING_SETTLE_S', 12.0))
-    max_s = float(cfg.get('DOORMAN_RING_SETTLE_MAX_S', 30.0))
-    now = time.monotonic()
-    off_val = _PRESS_EDGE['ts_off']
-    released = off_val is not None and off_val >= press_ts
-    if released:
-        assert off_val is not None
-        off_ts = off_val
-        target = off_ts + settle_s
-        if now >= target:
-            log.debug("ring-settle: %.1fs since release >= %.0fs window; opening backchannel",
-                      now - off_ts, settle_s)
-            return
-        log.info("ring-settle: sensor released %.1fs ago; waiting %.1fs more for the "
-                 "post-release blue window (min %.0fs) to clear before opening the "
-                 "backchannel", now - off_ts, target - now, settle_s)
-        await asyncio.sleep(target - now)
-        log.info("ring-settle: window clear (%.1fs since release); opening backchannel",
-                 time.monotonic() - off_ts)
-        return
-    if now - press_ts >= max_s:
-        log.warning("ring-settle: no release edge within %.0fs of press; opening "
-                    "backchannel anyway", max_s)
-        return
-    log.info("ring-settle: doorbell pressed %.1fs ago, release edge not yet seen; "
-             "waiting for release (cap %.0fs from press) before opening the backchannel",
-             now - press_ts, max_s)
-    deadline = press_ts + max_s
-    off_ts = None
-    while time.monotonic() < deadline:
+    max_s = float(cfg.get('DOORMAN_RING_SETTLE_MAX_S', 45.0))
+    min_fps = float(cfg.get('DOORMAN_RING_SETTLE_MIN_FPS', 3.0))
+
+    # Wait for the release edge (button let-go), capped at max_s from the press.
+    off_ts = _PRESS_EDGE['ts_off']
+    if off_ts is None or off_ts < press_ts:
+        deadline = press_ts + max_s
+        while time.monotonic() < deadline:
+            cand = _PRESS_EDGE['ts_off']
+            if cand is not None and cand >= press_ts:
+                off_ts = cand
+                break
+            await asyncio.sleep(0.5)
         cand = _PRESS_EDGE['ts_off']
         if cand is not None and cand >= press_ts:
             off_ts = cand
-            break
+    if off_ts is None or off_ts < press_ts:
+        log.warning("ring-settle: no release edge within %.0fs of press; gating on "
+                    "camera fps only", max_s)
+        off_ts = press_ts
+
+    # The real gate (2026-09-26, ring test 12): the AD410 degrades its MAIN RTSP
+    # stream during/after the ring. Dialing the bc=1 backchannel while the main
+    # stream is wedged is what crashes it - not a fixed post-release timer. The
+    # 00:56 test held the button 10s; the main stream (bc=0) hit i/o timeout 6.4s
+    # into the hold and kept crash-looping until release+~36s. A fixed release+12s
+    # opened bc=1 straight into that crash-loop. Frigate's camera_fps/process_fps is
+    # the only signal observed to track the degradation (~5.1 healthy, ~0.0-0.2
+    # wedged), and it is already wired up (camera_healthy). So: hold at least
+    # `settle_s` after the release edge (the fixed blue-window floor that keeps a
+    # short tap from opening while the light is still blue), then poll until the
+    # main stream is actually delivering frames again, capped at `max_s` after
+    # release so the greeting is never starved. A short tap recovers in ~7-8s and
+    # opens at the settle_s floor; a long hold recovers later and opens the moment
+    # fps is back.
+    floor = off_ts + settle_s
+    deadline = off_ts + max_s
+    log.info("ring-settle: button released; holding %.0fs floor then waiting for the "
+             "main stream to recover (camera_fps >= %.1f, cap %.0fs) before opening "
+             "the backchannel", settle_s, min_fps, max_s)
+    await asyncio.sleep(max(0.0, floor - time.monotonic()))
+    healthy = await camera_healthy('front_doorbell', min_fps=min_fps)
+    while not healthy and time.monotonic() < deadline:
         await asyncio.sleep(0.5)
-    cand = _PRESS_EDGE['ts_off']
-    if cand is not None and cand >= press_ts:
-        off_ts = cand
-    if off_ts is not None:
-        target = off_ts + settle_s
-        remaining = target - time.monotonic()
-        if remaining > 0:
-            log.info("ring-settle: release edge arrived; waiting %.1fs more before "
-                     "opening the backchannel", remaining)
-            await asyncio.sleep(remaining)
-        log.info("ring-settle: window clear (%.1fs since release); opening backchannel",
-                 time.monotonic() - off_ts)
+        healthy = await camera_healthy('front_doorbell', min_fps=min_fps)
+    if healthy:
+        log.info("ring-settle: main stream recovered (camera_fps >= %.1f); opening "
+                 "backchannel", min_fps)
     else:
-        log.warning("ring-settle: %.0fs cap reached without sensor release; opening "
-                    "backchannel anyway", max_s)
+        log.warning("ring-settle: %.0fs cap reached, main stream still degraded "
+                    "(camera_fps < %.1f); opening backchannel anyway", max_s, min_fps)
 
 
 class GeminiAudioTrack(AudioStreamTrack):
