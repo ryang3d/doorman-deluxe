@@ -575,6 +575,83 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
         await asyncio.sleep(poll_s)
 
 
+async def main_upstream_receiving(camera='front_doorbell', window_s=7.0,
+                                  min_bytes=200_000, timeout_s=6.0):
+    """True if go2rtc is actually RECEIVING upstream bytes from the camera on
+    `camera`'s MAIN stream, measured over `window_s`.
+
+    Why this (2026-09-26, ring test 15): Frigate's camera_fps/process_fps is a
+    LAGGING rolling average. When the AD410's main RTSP upstream dies, go2rtc
+    keeps feeding Frigate from its relay buffer for a while, so camera_fps still
+    reads >=~3.0 for ~10-15s after the upstream actually stopped. A gate on
+    camera_fps therefore opens the backchannel into a still-degraded camera
+    (the 02:32 test: main upstream i/o timed out ~15s earlier, camera_fps still
+    >=3.0 at open, main ffmpeg crashed the same second).
+
+    go2rtc's own main producer `bytes_recv` is the freshest signal: it is the
+    byte count from the camera and only advances when bytes actually arrive.
+    Healthy it moves ~1.6-1.8MB every ~6-7s; wedged it goes flat. (Note
+    remote_addr stays set even after the camera dies - that was the documented
+    go2rtc false-positive that broke the old producer check - but bytes_recv
+    does not lie.)
+
+    Sampling window is ~7s because go2rtc batches the counter: it updates in
+    ~6-7s steps and reads 0 between updates, so a short sample can miss a tick.
+    Returns True if the delta over the window is >= min_bytes, or on any fetch
+    error (fail-open, matching camera_healthy's behavior so a go2rtc API blip
+    never blocks the ring).
+    """
+    import asyncio as _aio
+    import json, time
+    import aiohttp
+    cfg = load_config()
+    base = (cfg.get('FRIGATE_URL') or 'http://<frigate-host>:5001').rstrip('/')
+    url = f"{base}/api/go2rtc/streams"
+
+    async def _fetch():
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
+            async with http.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+        cam = (data or {}).get(camera) or {}
+        producers = cam.get('producers') or []
+        for p in producers:
+            # the main producer has a camera remote_addr (upstream), not go2rtc
+            if (p.get('remote_addr') or '').split(':')[0].startswith('192'):
+                return p.get('bytes_recv')
+        if producers:
+            return producers[0].get('bytes_recv')
+        return None
+
+    try:
+        b0 = await _fetch()
+    except Exception as e:
+        log.warning("main upstream bytes probe error: %s; assuming OK", e)
+        return True
+    if b0 is None:
+        log.warning("main upstream bytes: no producer found for %s; assuming OK", camera)
+        return True
+    await _aio.sleep(window_s)
+    try:
+        b1 = await _fetch()
+    except Exception as e:
+        log.warning("main upstream bytes probe error (2nd): %s; assuming OK", e)
+        return True
+    if b1 is None:
+        return True
+    delta = (b1 or 0) - (b0 or 0)
+    ok = delta >= min_bytes
+    if ok:
+        log.debug("main upstream: %d bytes over %.0fs (>= %d); receiving",
+                  delta, window_s, min_bytes)
+    else:
+        log.warning("main upstream: only %d bytes over %.0fs (< %d); camera not "
+                    "delivering upstream", delta, window_s, min_bytes)
+    return ok
+
+
 # Post-press "blue window" state (single source of truth). Lives HERE (not in
 # doorman.py) because doorman.py can be loaded twice: the entry point runs it as
 # __main__ while voice_local does `import doorman`, giving two module instances
@@ -613,12 +690,15 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
        DOORMAN_RING_SETTLE_S (default 12s) after it. This is the fixed blue-window
        guarantee for short taps (blue lasts ~7-8s after release, so release+12s
        is safely past it).
-    2. Recovery poll: after the floor, poll Frigate's camera_fps/process_fps on
-       the main stream until it is delivering frames again (>=
-       DOORMAN_RING_SETTLE_MIN_FPS, default 3.0; healthy is ~5.1). This absorbs
-       long holds where the main stream stays degraded longer than the fixed
-       window. Cap the whole wait at DOORMAN_RING_SETTLE_MAX_S (default 45s)
-       after the release edge so the greeting is never starved.
+    2. Upstream poll: after the floor, poll go2rtc's main producer bytes_recv
+       until the AD410 is actually delivering upstream bytes again. This
+       replaces the earlier Frigate camera_fps poll, which is a LAGGING rolling
+       average - go2rtc keeps feeding Frigate from its relay buffer for
+       ~10-15s after the upstream dies, so camera_fps still read >=3.0 at open
+       (ring test 15, 02:32) even though the camera was wedged. bytes_recv only
+       advances when bytes actually arrive (healthy ~1.6MB/7s, wedged flat).
+       Capped at DOORMAN_RING_SETTLE_MAX_S (default 45s) after the release edge
+       so the greeting is never starved.
 
     If no press edge has been tracked when this is called, wait up to
     DOORMAN_RING_SETTLE_PRESS_GRACE_S (default 5s) for the HA WS press edge of
@@ -642,7 +722,6 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
     if settle_s is None:
         settle_s = float(cfg.get('DOORMAN_RING_SETTLE_S', 12.0))
     max_s = float(cfg.get('DOORMAN_RING_SETTLE_MAX_S', 45.0))
-    min_fps = float(cfg.get('DOORMAN_RING_SETTLE_MIN_FPS', 3.0))
 
     # Wait for the release edge (button let-go), capped at max_s from the press.
     off_ts = _PRESS_EDGE['ts_off']
@@ -662,36 +741,45 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
                     "camera fps only", max_s)
         off_ts = press_ts
 
-    # The real gate (2026-09-26, ring test 12): the AD410 degrades its MAIN RTSP
-    # stream during/after the ring. Dialing the bc=1 backchannel while the main
-    # stream is wedged is what crashes it - not a fixed post-release timer. The
-    # 00:56 test held the button 10s; the main stream (bc=0) hit i/o timeout 6.4s
-    # into the hold and kept crash-looping until release+~36s. A fixed release+12s
-    # opened bc=1 straight into that crash-loop. Frigate's camera_fps/process_fps is
-    # the only signal observed to track the degradation (~5.1 healthy, ~0.0-0.2
-    # wedged), and it is already wired up (camera_healthy). So: hold at least
-    # `settle_s` after the release edge (the fixed blue-window floor that keeps a
-    # short tap from opening while the light is still blue), then poll until the
-    # main stream is actually delivering frames again, capped at `max_s` after
-    # release so the greeting is never starved. A short tap recovers in ~7-8s and
-    # opens at the settle_s floor; a long hold recovers later and opens the moment
-    # fps is back.
+    # The real gate (2026-09-26): the AD410 degrades its MAIN RTSP stream
+    # during/after the ring. Dialing the bc=1 backchannel while the main stream
+    # is wedged is what crashes it - not a fixed post-release timer. Two earlier
+    # attempts proved the shape:
+    #   ring test 12 (00:56, 10s hold): main upstream i/o timed out 6.4s into
+    #     the hold and kept crash-looping until release+~36s; a fixed release+12s
+    #     opened bc=1 into that crash-loop.
+    #   ring test 15 (02:32, ~10s hold): a gate on Frigate camera_fps STILL
+    #     opened at the 12s floor because camera_fps is a LAGGING rolling
+    #     average - go2rtc kept feeding Frigate from its relay buffer after the
+    #     main upstream had already died, so camera_fps read >=3.0 at open.
+    #
+    # So the gate now polls go2rtc's own main producer bytes_recv (upstream
+    # bytes from the AD410), which only advances when bytes actually arrive:
+    #   1. Release floor: hold DOORMAN_RING_SETTLE_S (12s) after the release
+    #      edge (the fixed blue-window guarantee for short taps).
+    #   2. Upstream poll: then wait until the main upstream is actually
+    #      receiving again (main_upstream_receiving), capped at
+    #      DOORMAN_RING_SETTLE_MAX_S (45s) after release so the greeting is
+    #      never starved.
+    # A short tap recovers in ~7-8s and opens at the settle_s floor; a long
+    # hold recovers later and opens the moment upstream bytes resume.
     floor = off_ts + settle_s
     deadline = off_ts + max_s
-    log.info("ring-settle: button released; holding %.0fs floor then waiting for the "
-             "main stream to recover (camera_fps >= %.1f, cap %.0fs) before opening "
-             "the backchannel", settle_s, min_fps, max_s)
+    log.info("ring-settle: button released; holding %.0fs floor then waiting for "
+             "the main upstream to resume delivering (cap %.0fs) before opening "
+             "the backchannel", settle_s, max_s)
     await asyncio.sleep(max(0.0, floor - time.monotonic()))
-    healthy = await camera_healthy('front_doorbell', min_fps=min_fps)
+    healthy = await main_upstream_receiving('front_doorbell')
     while not healthy and time.monotonic() < deadline:
-        await asyncio.sleep(0.5)
-        healthy = await camera_healthy('front_doorbell', min_fps=min_fps)
+        log.info("ring-settle: main upstream still not delivering; re-checking in "
+                 "a moment")
+        await asyncio.sleep(1.0)
+        healthy = await main_upstream_receiving('front_doorbell')
     if healthy:
-        log.info("ring-settle: main stream recovered (camera_fps >= %.1f); opening "
-                 "backchannel", min_fps)
+        log.info("ring-settle: main upstream delivering again; opening backchannel")
     else:
-        log.warning("ring-settle: %.0fs cap reached, main stream still degraded "
-                    "(camera_fps < %.1f); opening backchannel anyway", max_s, min_fps)
+        log.warning("ring-settle: %.0fs cap reached, main upstream still not "
+                    "delivering; opening backchannel anyway", max_s)
 
 
 class GeminiAudioTrack(AudioStreamTrack):
