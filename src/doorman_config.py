@@ -31,6 +31,7 @@ DEFAULTS = {
     'MQTT_PASSWORD': '',
     # Frigate / go2rtc
     'FRIGATE_URL': 'http://<frigate-host>:5001',
+    'GO2RTC_URL': 'http://<frigate-host>:1984',
     'FRIGATE_TOPIC': 'frigate/events',
     'FRONT_CAMERA': 'front_doorbell',
     # doorbell camera mic RTSP (visitor audio in)
@@ -170,6 +171,23 @@ DEFAULTS = {
     # a Frigate person/face detection may trigger. Empty = gate disabled.
     'DOORMAN_PERSON_GATE': 'binary_sensor.front_patio_motion_zone_person_occupancy',
     'DOORMAN_PERSON_HOLD_S': 5.0,
+    # Post-press ring-settle gate (audio_bridge.ring_settle_wait): hold this many
+    # seconds AFTER the button release edge before opening the two-way
+    # backchannel (AD410 blue-window guard). Then poll go2rtc upstream bytes
+    # until the main stream resumes, capped at DOORMAN_RING_SETTLE_MAX_S.
+    # 0 = no fixed floor; the upstream poll is the only gate.
+    'DOORMAN_RING_SETTLE_S': 12.0,
+    'DOORMAN_RING_SETTLE_MAX_S': 45.0,
+    # Wait this long for the HA WS press edge of the same ring to arrive when
+    # no press has been tracked yet (pure-motion rings pay this one small
+    # delay before the backchannel may open). 0 = open immediately.
+    'DOORMAN_RING_SETTLE_PRESS_GRACE_S': 5.0,
+    # main_upstream_receiving window/threshold (the post-press upstream poll).
+    # window_s = how long to sample go2rtc bytes_recv; 3s is plenty to catch a
+    # wedged camera (flat counter) while staying fast. min_bytes scales with
+    # resolution/bitrate (50KB works at 2K and stays safe at 1080p/4K).
+    'DOORMAN_UPSTREAM_CHECK_WINDOW_S': 3.0,
+    'DOORMAN_UPSTREAM_CHECK_MIN_BYTES': 50_000,
     # How long to wait for Frigate face recognition after a person is detected,
     # before triggering as an unknown visitor. Frigate only lands a sub_label on
     # a minority of front-door events (stationary person -> soft face crop), so a
@@ -219,6 +237,7 @@ def load():
         'MQTT_HOST': 'MQTT_HOST', 'MQTT_PORT': 'MQTT_PORT',
         'MQTT_USER': 'MQTT_USER', 'MQTT_PASSWORD': 'MQTT_PASSWORD',
         'FRIGATE_URL': 'FRIGATE_URL', 'FRIGATE_TOPIC': 'FRIGATE_TOPIC',
+        'GO2RTC_URL': 'GO2RTC_URL',
         'FRONT_CAMERA': 'FRONT_CAMERA', 'CAM_MIC_RTSP': 'CAM_MIC_RTSP',
         'GEMINI_API_KEY': 'GEMINI_API_KEY', 'DOORMAN_VOICE': 'DOORMAN_VOICE',
         'DOORMAN_PERSONALIZED_GREETING': 'DOORMAN_PERSONALIZED_GREETING',

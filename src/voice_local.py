@@ -812,47 +812,59 @@ async def run_interaction_local(system_prompt, trigger_text,
     # connected WebRTC track); the local path opens a separate RTSP stream.
     grace_s = min(float(cfg.get('DOORMAN_LOCAL_MIC_GRACE_S', 10.0)), duration_s - 5.0)
     try:
-        if idle_timeout_s:
-            while not stop_ev.is_set():
-                if time.monotonic() - interaction_start < grace_s:
+        try:
+            if idle_timeout_s:
+                while not stop_ev.is_set():
+                    if time.monotonic() - interaction_start < grace_s:
+                        await asyncio.sleep(0.5)
+                        continue
+                    idle = await activity.idle_seconds()
+                    if idle >= idle_timeout_s:
+                        log.info("idle for %.0fs >= %ss, ending local interaction",
+                                 idle, idle_timeout_s)
+                        break
+                    if (time.monotonic() - interaction_start) >= duration_s:
+                        break
                     await asyncio.sleep(0.5)
-                    continue
-                idle = await activity.idle_seconds()
-                if idle >= idle_timeout_s:
-                    log.info("idle for %.0fs >= %ss, ending local interaction",
-                             idle, idle_timeout_s)
-                    break
-                if (time.monotonic() - interaction_start) >= duration_s:
-                    break
-                await asyncio.sleep(0.5)
-        else:
-            await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
-    except asyncio.TimeoutError:
-        pass
-    log.info("ending local interaction")
-    mic_task.cancel()
-    try:
-        await asyncio.wait_for(asyncio.gather(mic_task, return_exceptions=True), timeout=2)
-    except Exception:
-        pass
-    try:
-        end = asyncio.get_event_loop().time() + 0.3
-        while asyncio.get_event_loop().time() < end:
-            await asyncio.sleep(0.02)
-    except Exception:
-        pass
-    try:
-        await pc.close()
-    except Exception:
-        pass
-    await asyncio.sleep(0.8)
-    keep_task.cancel()
-    try:
-        await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
-    except Exception:
-        pass
-    try:
-        await ws.close()
-    except Exception:
-        pass
+            else:
+                await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+        except asyncio.TimeoutError:
+            pass
+    except asyncio.CancelledError:
+        # The outer hard cap in doorman.py (INTERACTION_MAX_S + 15) cancels this
+        # task BEFORE the watchdog's own duration. Without a finally, that
+        # cancellation skips the talkback teardown below -> the WebRTC peer
+        # connection + go2rtc signaling socket stay open, the mic task keeps
+        # running, and go2rtc holds a consumer on the two-way relay that pins the
+        # camera's bc=1 RTSP producer ("stuck in two-way mode"). Teardown in a
+        # finally so it ALWAYS runs.
+        log.info("local interaction cancelled by outer cap; tearing down talkback")
+        raise
+    finally:
+        log.info("ending local interaction")
+        mic_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(mic_task, return_exceptions=True), timeout=2)
+        except Exception:
+            pass
+        try:
+            end = asyncio.get_event_loop().time() + 0.3
+            while asyncio.get_event_loop().time() < end:
+                await asyncio.sleep(0.02)
+        except Exception:
+            pass
+        try:
+            await pc.close()
+        except Exception:
+            pass
+        await asyncio.sleep(0.8)
+        keep_task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
     return 0

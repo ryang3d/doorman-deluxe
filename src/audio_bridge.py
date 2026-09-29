@@ -575,8 +575,8 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
         await asyncio.sleep(poll_s)
 
 
-async def main_upstream_receiving(camera='front_doorbell', window_s=7.0,
-                                  min_bytes=200_000, timeout_s=6.0):
+async def main_upstream_receiving(camera='front_doorbell', window_s=None,
+                                  min_bytes=None, timeout_s=6.0):
     """True if go2rtc is actually RECEIVING upstream bytes from the camera on
     `camera`'s MAIN stream, measured over `window_s`.
 
@@ -590,23 +590,47 @@ async def main_upstream_receiving(camera='front_doorbell', window_s=7.0,
 
     go2rtc's own main producer `bytes_recv` is the freshest signal: it is the
     byte count from the camera and only advances when bytes actually arrive.
-    Healthy it moves ~1.6-1.8MB every ~6-7s; wedged it goes flat. (Note
-    remote_addr stays set even after the camera dies - that was the documented
-    go2rtc false-positive that broke the old producer check - but bytes_recv
-    does not lie.)
+    Healthy it moves ~1.6-1.8MB every ~6-7s at 4K/1080p (measured ~30-40KB/s
+    ticks at 2K); wedged it goes flat. (Note remote_addr stays set even after
+    the camera dies - that was the documented go2rtc false-positive that broke
+    the old producer check - but bytes_recv does not lie.)
 
-    Sampling window is ~7s because go2rtc batches the counter: it updates in
-    ~6-7s steps and reads 0 between updates, so a short sample can miss a tick.
-    Returns True if the delta over the window is >= min_bytes, or on any fetch
-    error (fail-open, matching camera_healthy's behavior so a go2rtc API blip
-    never blocks the ring).
+    The sampling window and threshold are configurable (DOORMAN_UPSTREAM_CHECK_
+    WINDOW_S / _MIN_BYTES) because the byte rate scales with the camera's
+    resolution/bitrate: at 1080p the 7s/200KB defaults are safe, but at 2K the
+    main stream ticks only ~30-40KB/s so a 200KB bar would false-fail. 3s with
+    a 50KB bar works across the tested resolutions. Returns True if the delta
+    over the window is >= min_bytes, or on any fetch error (fail-open, matching
+    camera_healthy's behavior so a go2rtc API blip never blocks the ring).
     """
     import asyncio as _aio
     import json, time
     import aiohttp
     cfg = load_config()
-    base = (cfg.get('FRIGATE_URL') or 'http://<frigate-host>:5001').rstrip('/')
-    url = f"{base}/api/go2rtc/streams"
+    if window_s is None:
+        try:
+            window_s = float(cfg.get('DOORMAN_UPSTREAM_CHECK_WINDOW_S', 3.0))
+        except (TypeError, ValueError):
+            window_s = 3.0
+    if min_bytes is None:
+        try:
+            min_bytes = int(float(cfg.get('DOORMAN_UPSTREAM_CHECK_MIN_BYTES', 50_000)))
+        except (TypeError, ValueError):
+            min_bytes = 50_000
+    window_s = max(1.0, window_s)
+    min_bytes = max(1_000, min_bytes)
+    # Prefer go2rtc DIRECTLY: its /api/streams reports bytes_recv live (advances
+    # ~1s), but the Frigate proxy (:5001/api/go2rtc/streams) caches that value
+    # for ~7s. A cached counter makes a short sampling window unreliable — two
+    # samples 3s apart can read the SAME bytes, delta 0 -> false "not receiving"
+    # -> the wait loops and burns a full extra cycle (the 7-19s settle we saw).
+    # go2rtc direct is auth-less and reachable from the doorman container.
+    g2r = (cfg.get('GO2RTC_URL') or '').rstrip('/')
+    if g2r:
+        url = f"{g2r}/api/streams"
+    else:
+        base = (cfg.get('FRIGATE_URL') or 'http://<frigate-host>:5001').rstrip('/')
+        url = f"{base}/api/go2rtc/streams"
 
     async def _fetch():
         async with aiohttp.ClientSession(

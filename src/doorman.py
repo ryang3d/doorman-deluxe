@@ -231,61 +231,70 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         import time
         interaction_start = time.monotonic()
         try:
-            if idle_timeout_s:
-                while not stop_ev.is_set():
-                    idle = await activity.idle_seconds()
-                    if idle >= idle_timeout_s:
-                        log.info("idle for %.0fs >= %ss, ending interaction", idle, idle_timeout_s)
-                        break
-                    if (time.monotonic() - interaction_start) >= duration_s:
-                        log.info("interaction duration elapsed")
-                        break
-                    await asyncio.sleep(0.5)
-            else:
-                await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
-        except asyncio.TimeoutError:
-            log.info("interaction duration elapsed")
-        log.info("ending interaction")
-        # Graceful teardown of the talkback WebRTC connection. Abrupt close of the
-        # go2rtc consumer crashes the AD410's two-way backchannel (observed: crash on
-        # session end after a working conversation). Order matters:
-        #   1. stop producing audio (recv + mic tasks)
-        #   2. let the last queued AI audio flush to the speaker
-        #   3. close the peer connection (sends RTCP BYE) while the signaling WS is
-        #      still being read so go2rtc processes the close
-        #   4. settle briefly so the camera releases the backchannel
-        #   5. then shut the signaling WS down
-        recv_task.cancel(); mic_task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
-        except Exception:
-            pass
-        # let queued AI audio flush to the speaker so we don't cut off mid-word
-        try:
-            end = asyncio.get_event_loop().time() + 0.3
-            while asyncio.get_event_loop().time() < end:
-                await asyncio.sleep(0.02)
-        except Exception:
-            pass
-        # close the peer connection (graceful RTCP BYE) while WS still being read
-        try:
-            await pc.close()
-        except Exception:
-            pass
-        # brief pause so go2rtc/camera releases the backchannel cleanly
-        try:
-            await asyncio.sleep(0.8)
-        except Exception:
-            pass
-        keep_task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
-        except Exception:
-            pass
-        try:
-            await ws.close()
-        except Exception:
-            pass
+            try:
+                if idle_timeout_s:
+                    while not stop_ev.is_set():
+                        idle = await activity.idle_seconds()
+                        if idle >= idle_timeout_s:
+                            log.info("idle for %.0fs >= %ss, ending interaction", idle, idle_timeout_s)
+                            break
+                        if (time.monotonic() - interaction_start) >= duration_s:
+                            log.info("interaction duration elapsed")
+                            break
+                        await asyncio.sleep(0.5)
+                else:
+                    await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+            except asyncio.TimeoutError:
+                log.info("interaction duration elapsed")
+        except asyncio.CancelledError:
+            # Outer hard cap (INTERACTION_MAX_S + 15) cancels this task before the
+            # watchdog's own duration; teardown must still run (finally) or the
+            # talkback WebRTC + go2rtc signaling leak and the camera stays in
+            # two-way mode.
+            log.info("interaction cancelled by outer cap; tearing down talkback")
+            raise
+        finally:
+            log.info("ending interaction")
+            # Graceful teardown of the talkback WebRTC connection. Abrupt close of the
+            # go2rtc consumer crashes the AD410's two-way backchannel (observed: crash on
+            # session end after a working conversation). Order matters:
+            #   1. stop producing audio (recv + mic tasks)
+            #   2. let the last queued AI audio flush to the speaker
+            #   3. close the peer connection (sends RTCP BYE) while the signaling WS is
+            #      still being read so go2rtc processes the close
+            #   4. settle briefly so the camera releases the backchannel
+            #   5. then shut the signaling WS down
+            recv_task.cancel(); mic_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
+            except Exception:
+                pass
+            # let queued AI audio flush to the speaker so we don't cut off mid-word
+            try:
+                end = asyncio.get_event_loop().time() + 0.3
+                while asyncio.get_event_loop().time() < end:
+                    await asyncio.sleep(0.02)
+            except Exception:
+                pass
+            # close the peer connection (graceful RTCP BYE) while WS still being read
+            try:
+                await pc.close()
+            except Exception:
+                pass
+            # brief pause so go2rtc/camera releases the backchannel cleanly
+            try:
+                await asyncio.sleep(0.8)
+            except Exception:
+                pass
+            keep_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
+            except Exception:
+                pass
+            try:
+                await ws.close()
+            except Exception:
+                pass
     return 0
 
 
@@ -938,7 +947,7 @@ async def amain(args):
         # Frigate's actual frame flow (camera_fps/process_fps), the only signal
         # observed to track an outage. Bounded so a ring is never dropped forever.
         try:
-            ok = await ab.wait_camera_healthy(max_wait_s=90, poll_s=5)
+            ok = await ab.wait_camera_healthy(max_wait_s=90, poll_s=2, consecutive=1)
             if ok:
                 log.info("camera health gate: camera ready")
             else:
