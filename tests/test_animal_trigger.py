@@ -38,6 +38,38 @@ def test_animal_max_s_numeric():
     print("PASS ANIMAL_MAX_S numeric normalize + override")
 
 
+def test_animal_reactions_toggle():
+    _clear()
+    assert dc.load()['DOORMAN_ANIMAL_REACTIONS'] is True
+    os.environ['DOORMAN_ANIMAL_REACTIONS'] = 'false'
+    assert dc.load()['DOORMAN_ANIMAL_REACTIONS'] is False
+    os.environ['DOORMAN_ANIMAL_REACTIONS'] = 'true'
+    assert dc.load()['DOORMAN_ANIMAL_REACTIONS'] is True
+    print("PASS ANIMAL_REACTIONS default true + env off/on")
+
+
+def test_label_allowed_independent_of_mode():
+    # animals on, person off (doorbell mode + animals) -> cat/dog pass, person/face blocked
+    assert dm._label_allowed('cat', person_trigger=False, animals_trigger=True)
+    assert dm._label_allowed('dog', person_trigger=False, animals_trigger=True)
+    assert not dm._label_allowed('person', person_trigger=False, animals_trigger=True)
+    assert not dm._label_allowed('face', person_trigger=False, animals_trigger=True)
+    # person on, animals off (person mode, animals off) -> person/face pass, cat/dog blocked
+    assert dm._label_allowed('person', person_trigger=True, animals_trigger=False)
+    assert dm._label_allowed('face', person_trigger=True, animals_trigger=False)
+    assert not dm._label_allowed('cat', person_trigger=True, animals_trigger=False)
+    assert not dm._label_allowed('dog', person_trigger=True, animals_trigger=False)
+    # both on (hybrid + animals) -> everything passes
+    for lbl in ('person', 'face', 'cat', 'dog'):
+        assert dm._label_allowed(lbl, person_trigger=True, animals_trigger=True)
+    # both off -> nothing passes
+    for lbl in ('person', 'face', 'cat', 'dog'):
+        assert not dm._label_allowed(lbl, person_trigger=False, animals_trigger=False)
+    # unknown label -> never passes
+    assert not dm._label_allowed('bird', person_trigger=True, animals_trigger=True)
+    print("PASS _label_allowed independence (animals work without person-triggering)")
+
+
 def test_animal_labels():
     assert 'cat' in dm.ANIMAL_LABELS and 'dog' in dm.ANIMAL_LABELS
     assert 'person' not in dm.ANIMAL_LABELS
@@ -142,6 +174,8 @@ if __name__ == '__main__':
     test_config_default_voice()
     test_config_env_override()
     test_animal_max_s_numeric()
+    test_animal_reactions_toggle()
+    test_label_allowed_independent_of_mode()
     test_animal_labels()
     test_decide_action_matrix()
     test_animal_lines_pool()

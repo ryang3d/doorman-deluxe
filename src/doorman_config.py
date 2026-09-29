@@ -159,6 +159,12 @@ DEFAULTS = {
     'DOORMAN_PERSONALIZED_GREETING': 'true',
     'DOORMAN_ANIMAL_BEHAVIOR': 'voice',
     'DOORMAN_ANIMAL_MAX_S': 45.0,
+    # Master on/off for animal reactions (cat/dog Frigate detections). Independent
+    # of DOORMAN_TRIGGER_MODE: when True, the Frigate listener runs in ANY mode so
+    # animal events are seen, and each triggers the reaction per
+    # DOORMAN_ANIMAL_BEHAVIOR. When False, animal events are ignored regardless of
+    # mode (and the Frigate listener only runs if person-triggering needs it).
+    'DOORMAN_ANIMAL_REACTIONS': True,
     # person = trigger on Frigate person detection (default); doorbell = trigger on
     # the HA doorbell_pressed binary_sensor going on; hybrid = trigger on either.
     'DOORMAN_TRIGGER_MODE': 'person',
@@ -241,6 +247,7 @@ def load():
         'FRONT_CAMERA': 'FRONT_CAMERA', 'CAM_MIC_RTSP': 'CAM_MIC_RTSP',
         'GEMINI_API_KEY': 'GEMINI_API_KEY', 'DOORMAN_VOICE': 'DOORMAN_VOICE',
         'DOORMAN_PERSONALIZED_GREETING': 'DOORMAN_PERSONALIZED_GREETING',
+        'DOORMAN_ANIMAL_REACTIONS': 'DOORMAN_ANIMAL_REACTIONS',
         'DOORMAN_ANIMAL_BEHAVIOR': 'DOORMAN_ANIMAL_BEHAVIOR',
         'DOORMAN_ANIMAL_MAX_S': 'DOORMAN_ANIMAL_MAX_S',
         'DOORMAN_TRIGGER_MODE': 'DOORMAN_TRIGGER_MODE',
@@ -331,6 +338,9 @@ def load():
     # Local-mic limiter: bool (caps close-voice peaks instead of hard-clipping)
     merged['DOORMAN_LOCAL_MIC_LIMITER'] = str(
         merged.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
+    # Animal reactions master switch: bool (independent of trigger mode)
+    merged['DOORMAN_ANIMAL_REACTIONS'] = str(
+        merged.get('DOORMAN_ANIMAL_REACTIONS', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
     # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.

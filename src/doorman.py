@@ -34,6 +34,12 @@ FRONT_CAMERA = _CFG['FRONT_CAMERA']      # Frigate camera name for the doorbell
 ANIMAL_LABELS = ('cat', 'dog')  # Frigate labels that get the animal reaction
                                 # (short animal-aware greeting, not a full human convo)
 ANIMAL_MAX_S = _CFG['DOORMAN_ANIMAL_MAX_S']  # hard cap on one animal voice session
+# Master on/off for animal reactions, independent of DOORMAN_TRIGGER_MODE. When
+# True, the Frigate listener runs in ANY mode so cat/dog events are seen and each
+# triggers the reaction per DOORMAN_ANIMAL_BEHAVIOR; when False, animal events are
+# ignored regardless of mode (and the Frigate listener only runs if person
+# triggering needs it).
+ANIMAL_REACTIONS = _CFG['DOORMAN_ANIMAL_REACTIONS']
 IGNORED_FACES = set()  # overridden by amain() from config; recognized names here are fully ignored
 INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
 INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
@@ -379,8 +385,26 @@ async def animal_reaction(label, cfg, behavior):
         log.warning("animal interaction overran cap")
 
 
-async def frigate_event_listener(handle_event, personalized_greeting=True, gate=None):
+def _label_allowed(label, person_trigger, animals_trigger):
+    """Whether the Frigate listener should act on `label` given which trigger
+    classes are enabled. cat/dog need animals_trigger; person/face need
+    person_trigger. Unknown labels are ignored."""
+    if label in ANIMAL_LABELS:
+        return bool(animals_trigger)
+    if label in ('person', 'face'):
+        return bool(person_trigger)
+    return False
+
+
+async def frigate_event_listener(handle_event, personalized_greeting=True, gate=None,
+                                 person_trigger=True, animals_trigger=True):
     """Subscribe to frigate/events; trigger Doorman when a person is at the door.
+
+    person_trigger / animals_trigger: which label classes this listener acts on.
+    person_trigger gates person/face events; animals_trigger gates cat/dog events.
+    This lets animal reactions be enabled in ANY trigger mode (the listener runs
+    with person_trigger=False in doorbell mode when animals are on) and lets
+    animals be disabled without changing the trigger mode.
 
     personalized_greeting=True (default): WAIT for face recognition before deciding
     whether to greet as known or unknown (greets by name if recognized; adds ~10-20s
@@ -541,6 +565,10 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         if camera != FRONT_CAMERA:
             continue
         if label not in ('person', 'cat', 'dog', 'face'):
+            continue
+        # Gate by label class so person-triggering and animal-triggering can be
+        # enabled/disabled independently (see person_trigger / animals_trigger).
+        if not _label_allowed(label, person_trigger, animals_trigger):
             continue
         now = time.monotonic()
         name = _parse_sub_label(after.get('sub_label'))
@@ -929,6 +957,7 @@ async def amain(args):
     log.info("personalized greeting enabled: %s", personalized)
     log.info("trigger mode: %s", trigger_mode)
     log.info("animal behavior: %s", cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice'))
+    log.info("animal reactions: %s (independent of trigger mode)", ANIMAL_REACTIONS)
     log.info("ignored faces: %s", sorted(IGNORED_FACES) or '(none)')
     busy = asyncio.Event()  # not used to block, but to note a running interaction
     async def handle_event(prompt, trigger_text, meta):
@@ -975,10 +1004,17 @@ async def amain(args):
     tasks.append(doorbell_press_tracker(sensor=doorbell_sensor))
     if trigger_mode in ('doorbell', 'hybrid'):
         tasks.append(doorbell_event_listener(handle_event, sensor=doorbell_sensor))
-    if trigger_mode in ('person', 'hybrid'):
+    # Person-triggering follows the trigger mode; animal-triggering is the
+    # independent DOORMAN_ANIMAL_REACTIONS toggle. The Frigate listener runs
+    # whenever EITHER is on, so animals work in any mode without changing it.
+    person_trigger = trigger_mode in ('person', 'hybrid')
+    animals_trigger = ANIMAL_REACTIONS
+    if person_trigger or animals_trigger:
         tasks.append(frigate_event_listener(handle_event,
                                             personalized_greeting=personalized,
-                                            gate=gate))
+                                            gate=gate,
+                                            person_trigger=person_trigger,
+                                            animals_trigger=animals_trigger))
     if gate is not None:
         tasks.append(doorzone_gate_listener(gate, sensor=gate.entity_id))
 
