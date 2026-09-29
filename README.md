@@ -52,6 +52,59 @@ own version.
   `/api/go2rtc/api/ws` path. No authentication (cookie or token) is needed on
   either path.
 
+## Camera prerequisites (Amcrest AD410)
+
+Doorman is verified on the Amcrest AD410. These camera-side settings matter and
+are not set by anything in this repo:
+
+- **Disable "Record Audio" (the camera's own local audio recording).** This is
+  the most important AD410-specific prerequisite. The AD410 runs a
+  single-threaded RTSP server and only ever allows one backchannel (`bc=1`)
+  session at a time; when Doorman opens its two-way session, the camera's own
+  audio recording competes for the same audio path and is a major contributor
+  to the camera wedging (main stream dies, RTSP `i/o timeout` / no-route-to-host)
+  under the concurrent load of Frigate's one-way record/detect plus Doorman's
+  two-way. Turning off the camera's internal audio recording removes that load.
+  Doorman's own mic and talkback are unaffected (they ride the go2rtc RTSP
+  sessions, not the camera's internal recorder).
+
+  - Via the **Amcrest Smart Home app**: the camera's recording settings →
+    "Record Audio" off.
+  - Via the camera's CGI API (the built-in web UI is unusable on the AD410 —
+    `merge.js` 404, the known Amcrest bug `rroller/dahua#134` — so use the app
+    or this): the endpoint is `configManager.cgi` under HTTP Digest auth, using
+    the camera's RTSP credentials:
+
+    ```sh
+    # disable the camera's local audio recording
+    curl -sg --digest -u "admin:<CAMERA_PASSWORD>" \
+      "http://<CAMERA_IP>/cgi-bin/configManager.cgi?action=setConfig&Record[0].SaveAudio=false"
+    # returns: OK
+    ```
+
+  - **Resolution:** the AD410's main stream defaults to 2560x1920. Running it
+    at 1920x1080 reduces the camera's encode load and makes post-press recovery
+    faster. This is optional but recommended; set it in the app or via the
+    camera's video settings.
+
+- **Post-press "blue window":** for ~7-8 s after a doorbell press the AD410
+  degrades its main stream (the ring light turns green→blue as it enters native
+  two-way voice mode). Dialing a second backchannel session into that window
+  wedges the camera. Doorman's `ring_settle_wait` gate handles this for you
+  (it waits out the window and confirms the main stream is delivering before
+  opening the two-way session), so no camera-side change is needed — it's here
+  for context when diagnosing timing.
+
+- **One backchannel at a time:** the camera allows exactly one `bc=1` session.
+  Doorman is built around this (a single two-way go2rtc stream multiplexing
+  mic-in, AI-out, and the camera mic). Don't add a second two-way consumer
+  (e.g. a second intercom app or a Frigate stream pointed at
+  `#backchannel=1`) while Doorman is live.
+
+- **Firmware:** verified on `1.000.00AC002`. Newer firmwares may change the
+  backchannel behavior; if the camera starts wedging after an update, re-check
+  the settings above.
+
 ## Deploy (docker compose, recommended)
 
 1. Install docker + docker compose plugin.
