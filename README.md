@@ -191,6 +191,17 @@ killed and reopened so the next words aren't swallowed; default 5.0 s) and
 `DOORMAN_LOCAL_MIC_MAX_REOPENS` (cap on ffmpeg reopens per interaction before the source
 is treated as dead; default 8).
 
+## Web UI
+
+An in-container web UI (aiohttp, no build step, offline) ships with the service: status dashboard, visit history with per-visit snapshot + recognized name, timestamped conversation transcripts, and a settings form covering every `DOORMAN_*` key.
+
+- **Reach it** at `http://<doorman-host>:8090` (the service uses `network_mode: host`, so the bind port is directly reachable). No auth - trusted LAN only. Disable with `DOORMAN_UI_ENABLED=false` (voice service only) or move it with `DOORMAN_UI_PORT`.
+- **Tabs:** Dashboard (camera health, engine, trigger, last visit, live "in a conversation" indicator + live transcript), History (visits with snapshot thumbnails, click through to the transcript), Settings (all keys, grouped, with hot/restart badges).
+- **Settings model.** Saving writes `.env`. Keys are either *hot* (re-read at the point of use, so the change takes effect on the next interaction without a restart) or *restart-required* (frozen into the process at start). The form flags each, and when a restart is needed it offers **Restart to apply**, which re-execs the process in place (same container - no recreate). `.env` is the source of truth both ways: a key present in the file wins, and a key removed from the file is dropped on the next start.
+- **Transcripts** are recorded from both voice engines (the same spots that log `[visitor said]` / `[doorman said]` / `[tool call]`), stored as `sessions.jsonl` under `DOORMAN_DATA_DIR` (the `doorman_data` volume in docker, mounted `/data`), with a per-visit snapshot alongside.
+
+New `.env` keys: `DOORMAN_UI_PORT` (default `8090`), `DOORMAN_UI_ENABLED` (default `true`), `DOORMAN_DATA_DIR` (default `/data`).
+
 ## Bare-metal deploy (alternative)
 
 Uses the same source without docker:
@@ -209,7 +220,11 @@ ffmpeg must be installed. Credentials come from environment variables (same `DOO
 - `src/audio_bridge.py` - Gemini Live session, mic capture, talkback, echo gate.
 - `src/voice_local.py` - local engine: STT -> LLM -> TTS pipeline, endpointer, mic capture/stall recovery.
 - `src/doorman_tools.py` - snapshot + notify tools, HA-native snapshot.
-- `src/doorman_config.py` - config loading (env > profile files > defaults).
+- `src/doorman_config.py` - config loading (env > profile files > defaults) + `.env` write/read for the UI.
+- `src/transcripts.py` - conversation transcripts: in-memory current session + `sessions.jsonl` history + per-visit snapshot.
+- `src/ui_api.py` - web UI backend (aiohttp): status/history/transcript/snapshot + config read/write + in-place restart.
+- `src/ui_schema.py` - the config field registry (groups, types, hot-vs-restart) that drives the settings form.
+- `src/ui/` - web UI frontend (vanilla JS, offline): `index.html`, `app.js`, `style.css`.
 - `src/doorman_prompt.py` - household policy persona.
 - `docker-compose.yml`, `Dockerfile` - container deployment.
 - `tests/` - unit tests (run with `.venv/bin/python tests/<name>.py`).
@@ -222,6 +237,7 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
 
 - Door test: `docker compose logs -f doorman` then walk up or ring the bell; watch for `TRIGGER` and, per engine, the spoken-reply line: `[gemini said]` (Gemini) or `[visitor said]` / `[doorman said]` (local engine).
 - Unit tests: run from the repo root, one at a time: `.venv/bin/python tests/test_animal_trigger.py` (all config, decision, prompt, and reaction unit tests). Same pattern for `tests/test_config.py`, `tests/test_snapshot.py`, etc.
+- The UI/transcript/config-file tests are pytest-based: `.venv/bin/python -m pytest tests/test_ui_api.py tests/test_transcripts.py tests/test_env_file.py -q` (needs `pytest-aiohttp` for the API tests: `.venv/bin/pip install pytest-aiohttp`).
 - Animal test: publish a synthetic Frigate cat event to the MQTT broker and watch for `TRIGGER`, `animal notify`, and `[gemini said]` lines:
   `mosquitto_pub -h <mqtt> -p 1883 -u <user> -P <pass> -t frigate/events -m '{"type":"new","after":{"id":"cat-test-1","camera":"front_doorbell","label":"cat"}}'`
   (Swap `label` to `dog` for a dog. Send a few times to confirm a different greeting line comes out each time.)
@@ -246,7 +262,7 @@ A living list of features being worked on, roughly ordered by priority and group
 
 ### Ops & visibility
 
-- [ ] **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view.
+- [x] **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view. **Done** - see the "Web UI" section above.
 - [ ] **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
 - [ ] **Local recording of interactions** - privacy-gated, off by default.
 - [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
