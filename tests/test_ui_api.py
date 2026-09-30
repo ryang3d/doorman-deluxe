@@ -107,6 +107,16 @@ async def test_history_and_session_roundtrip(client):
 
 
 @pytest.mark.asyncio
+async def test_root_serves_index_not_dir_listing(client):
+    async with await client as c:
+        r = await c.get('/')
+        assert r.status == 200
+        body = await r.text()
+        assert 'Index of' not in body
+        assert 'Doorman' in body
+
+
+@pytest.mark.asyncio
 async def test_restart_endpoint(client):
     async with await client as c:
         r = await c.get('/api/restart')

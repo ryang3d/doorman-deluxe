@@ -229,7 +229,17 @@ def build_app():
     app.router.add_get('/api/restart', api_restart_method_not_allowed)
     app.router.add_post('/api/restart', api_restart)
     ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
-    app.router.add_static('/', ui_dir, name='ui', show_index=True)
+
+    async def _index(request):
+        # exact '/' -> the app shell (add_static's show_index lists the dir
+        # instead of serving index.html, so handle the root explicitly)
+        idx = os.path.join(ui_dir, 'index.html')
+        if os.path.exists(idx):
+            return web.FileResponse(idx)
+        return web.Response(status=404, text='index.html not found in src/ui/')
+
+    app.router.add_get('/', _index)
+    app.router.add_static('/', ui_dir, name='ui', show_index=False)
     return app
 
 
