@@ -44,6 +44,7 @@ IGNORED_FACES = set()  # overridden by amain() from config; recognized names her
 INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
 INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
 IDLE_TIMEOUT_S = _CFG['IDLE_TIMEOUT_S']                     # end interaction after this many idle seconds
+_keep_warm_task = None                                       # set in amain() when engine=local
 
 
 def load_mqtt_creds():
@@ -153,6 +154,15 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
         log.info("voice engine: local")
         import voice_local as _vl
+        # Keep the local STT/TTS models warm between interactions so the first
+        # visitor request of the day isn't paying a ~9s (STT) / ~22s (TTS) cold
+        # model load on their clock. Started in amain() for the process lifetime;
+        # no-op for the gemini engine.
+        global _keep_warm_task
+        if _keep_warm_task is None:
+            log.warning("keep-warm task not started; starting lazily")
+            _keep_warm_task = asyncio.create_task(
+                _vl.keep_warm_loop(_CFG), name='keep-warm')
         return await _vl.run_interaction_local(system_prompt, trigger_text,
                                                duration_s=duration_s,
                                                idle_timeout_s=idle_timeout_s)
@@ -952,6 +962,15 @@ async def amain(args):
     # Full service: listen for door events.
     # Personalized greeting config: false -> greet immediately (no recognition wait).
     cfg = ab.load_config()
+    # Keep the local-engine STT/TTS models warm so a visitor's first words of the
+    # day aren't paying a cold model load (~9s STT / ~22s TTS) on their clock.
+    # Process-lifetime task; started before any listener so it's hot early. No-op
+    # for the gemini engine (its STT/TTS live in the model API, not on this box).
+    if str(cfg.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
+        import voice_local as _vl
+        global _keep_warm_task
+        _keep_warm_task = asyncio.create_task(_vl.keep_warm_loop(cfg),
+                                              name='keep-warm')
     personalized = bool(cfg.get('DOORMAN_PERSONALIZED_GREETING', True))
     global IGNORED_FACES
     IGNORED_FACES = set(cfg.get('DOORMAN_IGNORED_FACES') or set())

@@ -407,6 +407,61 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
     return len(pcm)
 
 
+# ---------------------------------------------------------------- keep-warm
+# The local engine's STT (faster-whisper) and TTS (voicebox qwen-tts) are lazy:
+# each cold-starts its model on the first real request. Measured on this box, the
+# first STT call pays ~9s and the first TTS call pays ~22s of model load + CUDA
+# warm-up — all on the visitor's clock, the moment they spoke or were about to
+# hear a reply. keep_warm_loop is a process-lifetime background task that issues
+# one tiny STT (/transcribe, a 0.5s silence wav) and one tiny TTS (/generate,
+# "Hello.") on an interval so the models stay loaded and the inference path hot.
+# The very first ping is deferred DOORMAN_KEEP_WARM_SETTLE_S so we don't warm
+# during process start-up; after that it repeats every
+# DOORMAN_KEEP_WARM_INTERVAL_S. No-op for the gemini engine (no local STT/TTS).
+async def keep_warm_loop(cfg):
+    settle_s = float(cfg.get('DOORMAN_KEEP_WARM_SETTLE_S', 30))
+    interval_s = float(cfg.get('DOORMAN_KEEP_WARM_INTERVAL_S', 1500))
+    silence_pcm = b'\x00' * (int(SAMPLE_RATE) * 2)  # 0.5s of 16k s16le silence
+    log.info("keep-warm: active (first ping in %.0fs, then every %.0fs)",
+             settle_s, interval_s)
+    try:
+        await asyncio.sleep(settle_s)
+    except asyncio.CancelledError:
+        return
+    while True:
+        t0 = time.monotonic()
+        # STT warm: a 0.5s silence through /transcribe loads the whisper model
+        # and warms the CUDA inference path. Empty text back = it worked.
+        stt_ms = -1
+        try:
+            stt = await transcribe_utterance(silence_pcm, cfg)
+            stt_ms = int((time.monotonic() - t0) * 1000)
+            log.info("keep-warm STT ok in %d ms (text=%r)", stt_ms,
+                     (stt.get('text') or '')[:20])
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("keep-warm STT failed: %s", str(e)[:120])
+        # TTS warm: generate a 1-word clip through the real voicebox path. This
+        # loads the qwen-tts model (the expensive part) and warms generation. We
+        # only need the model hot, so we don't fetch the audio bytes back.
+        t1 = time.monotonic()
+        try:
+            profile, engine = tts_profile_for_language('', cfg)
+            await _voicebox_generate("Hello.", profile, engine, cfg)
+            log.info("keep-warm TTS ok in %d ms (engine=%s)",
+                     int((time.monotonic() - t1) * 1000), engine)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("keep-warm TTS failed: %s", str(e)[:120])
+        log.info("keep-warm cycle done; next in %.0fs", interval_s)
+        try:
+            await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            return
+
+
 def _claims_notification(text: str) -> bool:
     """True if the spoken text claims the homeowner was notified/alerted.
 
