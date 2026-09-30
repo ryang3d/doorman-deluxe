@@ -1046,6 +1046,23 @@ async def amain(args):
     if gate is not None:
         tasks.append(doorzone_gate_listener(gate, sensor=gate.entity_id))
 
+    # Web UI (in-container aiohttp app). Runs in this same process/loop so it
+    # shares the transcript store + camera health probe. network_mode host means
+    # the bind port is reachable on the host LAN. Disabled with
+    # DOORMAN_UI_ENABLED=false (service-only runs).
+    if str(cfg.get('DOORMAN_UI_ENABLED', 'true')).strip().lower() in ('true', '1', 'yes', 'on'):
+        import ui_api
+        ui_port = int(cfg.get('DOORMAN_UI_PORT', 8090))
+
+        async def _run_ui():
+            runner = await ui_api.serve(port=ui_port)
+            try:
+                await asyncio.Event().wait()   # run until cancelled
+            finally:
+                await runner.cleanup()
+        tasks.append(_run_ui())
+        log.info('ui: enabled on port %d', ui_port)
+
     # one or both listeners run concurrently, feeding the same handle_event
     await asyncio.gather(*tasks)
 
