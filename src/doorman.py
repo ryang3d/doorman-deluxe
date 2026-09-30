@@ -21,6 +21,7 @@ import argparse, asyncio, json, logging, sys, os
 import audio_bridge as ab
 import doorman_prompt
 import doorman_tools
+import transcripts as _tr
 
 log = logging.getLogger("doorman")
 
@@ -70,6 +71,7 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, activ
                         it_ = getattr(sc, 'input_transcription', None)
                         if it_ and getattr(it_, 'text', None):
                             log.info("[visitor said] %s", it_.text)
+                            _tr.msg('visitor', it_.text)
                             if activity:
                                 await activity.mark()
                         iit_ = getattr(sc, 'interim_input_transcription', None)
@@ -78,6 +80,7 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, activ
                         ot = getattr(sc, 'output_transcription', None)
                         if ot and ot.text:
                             log.info("[gemini said] %s", ot.text)
+                            _tr.msg('doorman', ot.text)
                             if activity:
                                 await activity.mark()
                         mt = getattr(sc, 'model_turn', None)
@@ -98,6 +101,7 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, activ
                         fns = []
                         for fc in tc.function_calls:
                             log.info("[tool call] %s", fc.name)
+                            _tr.msg('tool', 'tool: %s' % fc.name, kind='tool')
                             if activity:
                                 await activity.mark()
                             fns.append(fc)
@@ -144,13 +148,27 @@ class ActivityClock:
 
 
 async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MAX_S,
-                          idle_timeout_s=None):
+                          idle_timeout_s=None, meta=None):
     """Run one full door voice interaction (same proven pipeline as audio_bridge.run_once,
     but with persona + tools). Returns exit code.
 
     idle_timeout_s: if set, end the interaction after this many seconds with no visitor
     speech / AI speech / tool activity (defaults to INTERACTION_MAX_S, i.e. no early cut).
     """
+    meta = meta or {}
+    _engine = ('local' if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local'
+               else 'gemini')
+    _label = meta.get('label') or 'person'
+    _trg = ('doorbell' if meta.get('doorbell_pressed')
+            else ('animal' if _label in ANIMAL_LABELS else 'person'))
+    _tr.begin_session(trigger=_trg, name=meta.get('name'), engine=_engine,
+                      doorbell=bool(meta.get('doorbell_pressed')), label=_label)
+    _sess_id = _tr.current()['session_id'] if _tr.current() else None
+    if _sess_id:
+        try:
+            await _tr.capture_session_snapshot(ab.load_config(), _sess_id)
+        except Exception:
+            pass
     if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
         log.info("voice engine: local")
         import voice_local as _vl
@@ -166,161 +184,164 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         return await _vl.run_interaction_local(system_prompt, trigger_text,
                                                duration_s=duration_s,
                                                idle_timeout_s=idle_timeout_s)
-    activity = ActivityClock()  # marks visitor/AI/tool activity; idle watchdog reads it
-    cfg = ab.load_config()
-    audio_q = asyncio.Queue()
-    stop_ev = asyncio.Event()
-    cfg_tools = {'response_modalities': ['AUDIO'],
-                 'system_instruction': {'parts': [{'text': system_prompt}]},
-                 'tools': [{'function_declarations': doorman_tools.tool_declarations()}]}
-    cfg_tools.update(ab.voice_speech_config(cfg))
+    try:
+        activity = ActivityClock()  # marks visitor/AI/tool activity; idle watchdog reads it
+        cfg = ab.load_config()
+        audio_q = asyncio.Queue()
+        stop_ev = asyncio.Event()
+        cfg_tools = {'response_modalities': ['AUDIO'],
+                     'system_instruction': {'parts': [{'text': system_prompt}]},
+                     'tools': [{'function_declarations': doorman_tools.tool_declarations()}]}
+        cfg_tools.update(ab.voice_speech_config(cfg))
 
-    from google import genai
-    client = genai.Client(api_key=cfg['GEMINI_API_KEY'])
-    model = 'gemini-3.1-flash-live-preview'
-    cm = client.aio.live.connect(model=model, config=cfg_tools)
+        from google import genai
+        client = genai.Client(api_key=cfg['GEMINI_API_KEY'])
+        model = 'gemini-3.1-flash-live-preview'
+        cm = client.aio.live.connect(model=model, config=cfg_tools)
 
-    async with cm as session:
-        # Talkback connect with retry. Opening the AD410's backchannel session
-        # races the camera's two always-on streams: even with record+detect
-        # consolidated onto go2rtc relays, the FIRST backchannel open can hit a
-        # one-shot RTSP i/o timeout while the camera's audio subsystem settles.
-        # The backchannel streams fine immediately afterward (verified by direct
-        # pull), so retry with a settle delay before giving up on the greeting.
-        # RING-SETTLE WAIT: never open the backchannel inside the AD410's
-        # ~7-8s post-press "blue" window (verified 2026-09-25: opening bc=1
-        # during that window wedges the camera's RTSP server; after it is safe).
-        # If a press was tracked within the window, wait out the remainder.
-        try:
-            await ab.ring_settle_wait(cfg, log=log)
-        except Exception as e:
-            log.warning("ring-settle wait error: %s", str(e)[:80])
-        pc = ws = mic = keep_task = recv_holder = None
-        for attempt in range(3):
+        async with cm as session:
+            # Talkback connect with retry. Opening the AD410's backchannel session
+            # races the camera's two always-on streams: even with record+detect
+            # consolidated onto go2rtc relays, the FIRST backchannel open can hit a
+            # one-shot RTSP i/o timeout while the camera's audio subsystem settles.
+            # The backchannel streams fine immediately afterward (verified by direct
+            # pull), so retry with a settle delay before giving up on the greeting.
+            # RING-SETTLE WAIT: never open the backchannel inside the AD410's
+            # ~7-8s post-press "blue" window (verified 2026-09-25: opening bc=1
+            # during that window wedges the camera's RTSP server; after it is safe).
+            # If a press was tracked within the window, wait out the remainder.
             try:
-                pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
-                break
+                await ab.ring_settle_wait(cfg, log=log)
             except Exception as e:
-                log.warning("talkback connect attempt %d/3 failed: %s", attempt + 1,
-                            (str(e).splitlines()[0] if str(e) else e)[:120])
-                if attempt < 2:
-                    await asyncio.sleep(8.0)
-        if ws is None:
-            log.error("talkback connect failed after 3 attempts; skipping interaction")
-            return 2
+                log.warning("ring-settle wait error: %s", str(e)[:80])
+            pc = ws = mic = keep_task = recv_holder = None
+            for attempt in range(3):
+                try:
+                    pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
+                    break
+                except Exception as e:
+                    log.warning("talkback connect attempt %d/3 failed: %s", attempt + 1,
+                                (str(e).splitlines()[0] if str(e) else e)[:120])
+                    if attempt < 2:
+                        await asyncio.sleep(8.0)
+            if ws is None:
+                log.error("talkback connect failed after 3 attempts; skipping interaction")
+                return 2
 
-        speaking = ab.SpeakingState()
-        recv_task = asyncio.create_task(
-            receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
-        # MIC SOURCE selection. Default is the go2rtc RELAY, not the twoway
-        # connection's received-audio track.
-        #
-        # History (2026-09-10): this used to prefer mic_from_webtrack whenever
-        # recv_holder had a track. go2rtc ALWAYS offers that track (sendonly
-        # PCMA/8000), so the webtrack path was always taken - and it was never
-        # observed to carry the visitor's voice. Three rings produced greeting-only
-        # conversations: Gemini transcribed nothing and every interaction sat out its
-        # 25s idle timeout. The track's presence silently shadowed the working relay
-        # path. The relay is therefore the default, and the webtrack is opt-in
-        # (DOORMAN_MIC_SOURCE=webtrack) for A/B testing.
-        #
-        # http (DOORMAN_MIC_SOURCE=http): the AD410's native HTTP getAudio
-        # intercom. Opens NO RTSP session on the camera, so it is the zero-RTSP
-        # fallback when the relay wedges under concurrent-stream load. Needs
-        # DOORMAN_DOORBELL_HOST/USER/PASSWORD.
-        mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
-        if mic_source == 'webtrack' and recv_holder.get('track') is not None:
-            log.info("mic source: webtrack (twoway received-audio track)")
-            mic_task = asyncio.create_task(
-                ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
-        elif mic_source == 'http':
-            log.info("mic source: http (AD410 native getAudio, zero-RTSP)")
-            mic_task = asyncio.create_task(
-                ab.mic_from_http(session, stop_ev, speaking))
-        else:
-            if mic_source == 'webtrack':
-                log.warning("mic source: webtrack requested but no received-audio "
-                            "track offered; using relay instead")
-            log.info("mic source: relay %s",
-                     str(cfg.get('DOORMAN_MIC_RTSP') or '').split('@')[-1])
-            mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
-        log.info("interaction starting (max %ss%s): %s", duration_s,
-                 f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)
-        try:
-            await asyncio.sleep(1.0)
-            await session.send_realtime_input(text=trigger_text)
-        except Exception as e:
-            log.warning("prime err: %s", e)
+            speaking = ab.SpeakingState()
+            recv_task = asyncio.create_task(
+                receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
+            # MIC SOURCE selection. Default is the go2rtc RELAY, not the twoway
+            # connection's received-audio track.
+            #
+            # History (2026-09-10): this used to prefer mic_from_webtrack whenever
+            # recv_holder had a track. go2rtc ALWAYS offers that track (sendonly
+            # PCMA/8000), so the webtrack path was always taken - and it was never
+            # observed to carry the visitor's voice. Three rings produced greeting-only
+            # conversations: Gemini transcribed nothing and every interaction sat out its
+            # 25s idle timeout. The track's presence silently shadowed the working relay
+            # path. The relay is therefore the default, and the webtrack is opt-in
+            # (DOORMAN_MIC_SOURCE=webtrack) for A/B testing.
+            #
+            # http (DOORMAN_MIC_SOURCE=http): the AD410's native HTTP getAudio
+            # intercom. Opens NO RTSP session on the camera, so it is the zero-RTSP
+            # fallback when the relay wedges under concurrent-stream load. Needs
+            # DOORMAN_DOORBELL_HOST/USER/PASSWORD.
+            mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
+            if mic_source == 'webtrack' and recv_holder.get('track') is not None:
+                log.info("mic source: webtrack (twoway received-audio track)")
+                mic_task = asyncio.create_task(
+                    ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
+            elif mic_source == 'http':
+                log.info("mic source: http (AD410 native getAudio, zero-RTSP)")
+                mic_task = asyncio.create_task(
+                    ab.mic_from_http(session, stop_ev, speaking))
+            else:
+                if mic_source == 'webtrack':
+                    log.warning("mic source: webtrack requested but no received-audio "
+                                "track offered; using relay instead")
+                log.info("mic source: relay %s",
+                         str(cfg.get('DOORMAN_MIC_RTSP') or '').split('@')[-1])
+                mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
+            log.info("interaction starting (max %ss%s): %s", duration_s,
+                     f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)
+            try:
+                await asyncio.sleep(1.0)
+                await session.send_realtime_input(text=trigger_text)
+            except Exception as e:
+                log.warning("prime err: %s", e)
 
-        # Watch for either the hard cap or (if configured) an idle period with no activity.
-        import time
-        interaction_start = time.monotonic()
-        try:
+            # Watch for either the hard cap or (if configured) an idle period with no activity.
+            import time
+            interaction_start = time.monotonic()
             try:
-                if idle_timeout_s:
-                    while not stop_ev.is_set():
-                        idle = await activity.idle_seconds()
-                        if idle >= idle_timeout_s:
-                            log.info("idle for %.0fs >= %ss, ending interaction", idle, idle_timeout_s)
-                            break
-                        if (time.monotonic() - interaction_start) >= duration_s:
-                            log.info("interaction duration elapsed")
-                            break
-                        await asyncio.sleep(0.5)
-                else:
-                    await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
-            except asyncio.TimeoutError:
-                log.info("interaction duration elapsed")
-        except asyncio.CancelledError:
-            # Outer hard cap (INTERACTION_MAX_S + 15) cancels this task before the
-            # watchdog's own duration; teardown must still run (finally) or the
-            # talkback WebRTC + go2rtc signaling leak and the camera stays in
-            # two-way mode.
-            log.info("interaction cancelled by outer cap; tearing down talkback")
-            raise
-        finally:
-            log.info("ending interaction")
-            # Graceful teardown of the talkback WebRTC connection. Abrupt close of the
-            # go2rtc consumer crashes the AD410's two-way backchannel (observed: crash on
-            # session end after a working conversation). Order matters:
-            #   1. stop producing audio (recv + mic tasks)
-            #   2. let the last queued AI audio flush to the speaker
-            #   3. close the peer connection (sends RTCP BYE) while the signaling WS is
-            #      still being read so go2rtc processes the close
-            #   4. settle briefly so the camera releases the backchannel
-            #   5. then shut the signaling WS down
-            recv_task.cancel(); mic_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
-            except Exception:
-                pass
-            # let queued AI audio flush to the speaker so we don't cut off mid-word
-            try:
-                end = asyncio.get_event_loop().time() + 0.3
-                while asyncio.get_event_loop().time() < end:
-                    await asyncio.sleep(0.02)
-            except Exception:
-                pass
-            # close the peer connection (graceful RTCP BYE) while WS still being read
-            try:
-                await pc.close()
-            except Exception:
-                pass
-            # brief pause so go2rtc/camera releases the backchannel cleanly
-            try:
-                await asyncio.sleep(0.8)
-            except Exception:
-                pass
-            keep_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
-            except Exception:
-                pass
-            try:
-                await ws.close()
-            except Exception:
-                pass
-    return 0
+                try:
+                    if idle_timeout_s:
+                        while not stop_ev.is_set():
+                            idle = await activity.idle_seconds()
+                            if idle >= idle_timeout_s:
+                                log.info("idle for %.0fs >= %ss, ending interaction", idle, idle_timeout_s)
+                                break
+                            if (time.monotonic() - interaction_start) >= duration_s:
+                                log.info("interaction duration elapsed")
+                                break
+                            await asyncio.sleep(0.5)
+                    else:
+                        await asyncio.wait_for(stop_ev.wait(), timeout=duration_s)
+                except asyncio.TimeoutError:
+                    log.info("interaction duration elapsed")
+            except asyncio.CancelledError:
+                # Outer hard cap (INTERACTION_MAX_S + 15) cancels this task before the
+                # watchdog's own duration; teardown must still run (finally) or the
+                # talkback WebRTC + go2rtc signaling leak and the camera stays in
+                # two-way mode.
+                log.info("interaction cancelled by outer cap; tearing down talkback")
+                raise
+            finally:
+                log.info("ending interaction")
+                # Graceful teardown of the talkback WebRTC connection. Abrupt close of the
+                # go2rtc consumer crashes the AD410's two-way backchannel (observed: crash on
+                # session end after a working conversation). Order matters:
+                #   1. stop producing audio (recv + mic tasks)
+                #   2. let the last queued AI audio flush to the speaker
+                #   3. close the peer connection (sends RTCP BYE) while the signaling WS is
+                #      still being read so go2rtc processes the close
+                #   4. settle briefly so the camera releases the backchannel
+                #   5. then shut the signaling WS down
+                recv_task.cancel(); mic_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
+                except Exception:
+                    pass
+                # let queued AI audio flush to the speaker so we don't cut off mid-word
+                try:
+                    end = asyncio.get_event_loop().time() + 0.3
+                    while asyncio.get_event_loop().time() < end:
+                        await asyncio.sleep(0.02)
+                except Exception:
+                    pass
+                # close the peer connection (graceful RTCP BYE) while WS still being read
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+                # brief pause so go2rtc/camera releases the backchannel cleanly
+                try:
+                    await asyncio.sleep(0.8)
+                except Exception:
+                    pass
+                keep_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.gather(keep_task, return_exceptions=True), timeout=1)
+                except Exception:
+                    pass
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+        return 0
+    finally:
+        _tr.end_session(status='ended')
 
 
 # ---------------------------------------------------------------- MQTT listener
@@ -398,7 +419,8 @@ async def animal_reaction(label, cfg, behavior):
     try:
         await asyncio.wait_for(
             run_interaction(aprompt, atrigger, duration_s=ANIMAL_MAX_S,
-                            idle_timeout_s=IDLE_TIMEOUT_S),
+                            idle_timeout_s=IDLE_TIMEOUT_S,
+                            meta={'label': label, 'name': None}),
             timeout=ANIMAL_MAX_S + 15)
     except asyncio.TimeoutError:
         log.warning("animal interaction overran cap")
@@ -1020,7 +1042,7 @@ async def amain(args):
         try:
             await asyncio.wait_for(
                 run_interaction(prompt, trigger_text, duration_s=INTERACTION_MAX_S,
-                                idle_timeout_s=IDLE_TIMEOUT_S),
+                                idle_timeout_s=IDLE_TIMEOUT_S, meta=meta),
                 timeout=INTERACTION_MAX_S + 15)
         except asyncio.TimeoutError:
             log.warning("interaction overran cap")
