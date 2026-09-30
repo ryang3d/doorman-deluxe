@@ -1051,6 +1051,8 @@ async def amain(args):
 
 
 def main():
+    import doorman_config as _dc2
+    _dc2.load_env_file()   # .env -> os.environ, so a re-exec picks up GUI edits
     ap = argparse.ArgumentParser()
     ap.add_argument('--once', type=float, default=0,
                     help='if >0, run one interaction for N seconds immediately and exit')

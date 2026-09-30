@@ -207,6 +207,10 @@ DEFAULTS = {
     'DOORMAN_SNAPSHOT_DIR': '~/doorman/snapshots',
     # keep at most this many recent snapshots in the dir (0 = keep all / no pruning)
     'DOORMAN_SNAPSHOT_RETENTION': 25,
+    # web UI (in-container aiohttp app; network_mode host => LAN reachable)
+    'DOORMAN_DATA_DIR': '/data',
+    'DOORMAN_UI_PORT': 8090,
+    'DOORMAN_UI_ENABLED': True,
     # legacy file paths (only used as fallback sources, not needed in docker)
     'PROFILE_ENV': PROFILE_ENV,
     'FRIGATE_ENV': FRIGATE_ENV,
@@ -339,6 +343,13 @@ def load():
     # Animal reactions master switch: bool (independent of trigger mode)
     merged['DOORMAN_ANIMAL_REACTIONS'] = str(
         merged.get('DOORMAN_ANIMAL_REACTIONS', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
+    # Web UI toggles
+    merged['DOORMAN_UI_ENABLED'] = str(
+        merged.get('DOORMAN_UI_ENABLED', 'true')).strip().lower() in ('true', '1', 'yes', 'on')
+    try:
+        merged['DOORMAN_UI_PORT'] = int(float(merged['DOORMAN_UI_PORT']))
+    except (TypeError, ValueError):
+        merged['DOORMAN_UI_PORT'] = 8090
     merged['DOORMAN_PERSONALIZED_GREETING'] = str(
         merged['DOORMAN_PERSONALIZED_GREETING']).strip().lower() in ('true', '1', 'yes', 'on')
     # DOORMAN_IGNORED_FACES: comma-separated, case-insensitive, de-duplicated name set.
@@ -349,3 +360,23 @@ def load():
         if part.strip()
     }
     return merged
+
+
+# Path the UI writes to / reads from (bind-mounted host .env inside the container).
+# Overridable for bare-metal/tests via DOORMAN_ENV_FILE.
+ENV_FILE_PATH = os.path.expanduser(os.environ.get('DOORMAN_ENV_FILE', '/app/.env'))
+
+
+def load_env_file(path=None):
+    """Populate os.environ from the .env file (file wins over existing env).
+
+    Makes the bind-mounted host .env the single source of truth: a re-exec
+    re-reads it, so a UI 'restart' applies every setting without a container
+    recreate. Safe to call repeatedly; only keys present in the file are set.
+    Returns the parsed dict (empty if the file is missing).
+    """
+    path = path or ENV_FILE_PATH
+    kv = _read_kv_file(path)   # reuse the #/blank/comment-aware reader
+    for k, v in kv.items():
+        os.environ[k] = v
+    return kv
