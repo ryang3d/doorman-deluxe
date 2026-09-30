@@ -213,11 +213,20 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         # 25s idle timeout. The track's presence silently shadowed the working relay
         # path. The relay is therefore the default, and the webtrack is opt-in
         # (DOORMAN_MIC_SOURCE=webtrack) for A/B testing.
+        #
+        # http (DOORMAN_MIC_SOURCE=http): the AD410's native HTTP getAudio
+        # intercom. Opens NO RTSP session on the camera, so it is the zero-RTSP
+        # fallback when the relay wedges under concurrent-stream load. Needs
+        # DOORMAN_DOORBELL_HOST/USER/PASSWORD.
         mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
         if mic_source == 'webtrack' and recv_holder.get('track') is not None:
             log.info("mic source: webtrack (twoway received-audio track)")
             mic_task = asyncio.create_task(
                 ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
+        elif mic_source == 'http':
+            log.info("mic source: http (AD410 native getAudio, zero-RTSP)")
+            mic_task = asyncio.create_task(
+                ab.mic_from_http(session, stop_ev, speaking))
         else:
             if mic_source == 'webtrack':
                 log.warning("mic source: webtrack requested but no received-audio "

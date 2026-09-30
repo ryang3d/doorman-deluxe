@@ -586,34 +586,99 @@ async def run_interaction_local(system_prompt, trigger_text,
     mic_limiter = str(cfg.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
     history = []
 
+    # --- shared audio-chunk processing -----------------------------------------
+    # Both the RTSP relay mic (mic_loop) and the AD410 HTTP getAudio mic
+    # (mic_loop_http) feed 3200-byte (100 ms @16k) chunks here, so VAD /
+    # endpointer / STT / activity behave identically regardless of mic source.
+    _cap = None
+    _cap_env = cfg.get('DOORMAN_LOCAL_DEBUG_CAPTURE')
+    if _cap_env:
+        import wave as _wave
+        _cap = _wave.open(_cap_env, 'wb')
+        _cap.setnchannels(1); _cap.setsampwidth(2); _cap.setframerate(SAMPLE_RATE)
+        log.info("local mic: capturing to %s", _cap_env)
+    _seen_data = 0
+    _next_report = 50000          # log at >=50KB, then every 50KB
+    _last_data_t = time.monotonic()
+    _t_open = time.monotonic()
+    _first_data_logged = False
+    _speech_reported = -10.0
+    _mic_acc = bytearray()
+
+    async def process_local_audio(data: bytes):
+        """Feed one raw 16k s16le chunk through VAD/endpointer/STT. Both mic
+        sources call this so the two paths are byte-identical past the source."""
+        nonlocal _seen_data, _next_report, _last_data_t, _first_data_logged, _speech_reported, _mic_acc
+        if _cap:
+            try: _cap.writeframes(data)
+            except Exception: pass
+        _now = time.monotonic()
+        if _now - _last_data_t > 3.0:
+            log.warning("local mic: trickle - no audio data for %.1fs (total %d bytes)",
+                        _now - _last_data_t, _seen_data)
+        _last_data_t = _now
+        if not _first_data_logged:
+            log.info("local mic: first audio data after %.1fs", _now - _t_open)
+            _first_data_logged = True
+        _seen_data += len(data)
+        if _seen_data >= _next_report:
+            log.info("local mic: audio flowing (%d bytes total)", _seen_data)
+            _next_report += 50000
+        sp_frames = ep.speech_frame_count()
+        if sp_frames > 0 and _now - _speech_reported > 5.0:
+            log.info("local mic: VAD flagged speech in %d frames so far", sp_frames)
+            _speech_reported = _now
+        _mic_acc.extend(data)
+        while len(_mic_acc) >= VAD_FRAME_BYTES:
+            frame = bytes(_mic_acc[:VAD_FRAME_BYTES])
+            del _mic_acc[:VAD_FRAME_BYTES]
+            if await speaking.muted():
+                ep.push_frame(frame, muted=True)
+                continue
+            utter = ep.push_frame(frame, muted=False)
+            # VAD-aware idle: refresh the activity clock while the visitor is
+            # still mid-utterance (the endpointer has an open speech segment
+            # >= min_speech_ms). This keeps long CONNECTED speech alive so the
+            # idle watchdog cannot end the session mid-sentence. Without this,
+            # the idle clock only advanced on finalized STT text; a visitor
+            # talking in continuous phrases (never hitting the 700ms end-
+            # silence) went idle at 40s and got cut off mid-sentence (verified
+            # 2026-09-19: capture had loud continuous speech cap 26-68s but the
+            # endpointer never finalized it, so the session ended idle). The
+            # open segment only persists while VAD sees speech, so this does NOT
+            # re-open the old "ambient noise keeps the session alive" bug: quiet
+            # noise is an open segment of ~0ms (RMS-blip frames don't extend a
+            # qualifying segment), and once the visitor stops, open_segment_ms
+            # -> 0 and the clock starts counting again.
+            if ep.open_segment_ms() >= ep.min_speech_ms:
+                await activity.mark()
+            if utter:
+                await handle_utterance(utter)
+
     async def mic_loop():
         """Same ffmpeg RTSP open + probe + retry as ab.mic_to_gemini, but frames feed
-        the endpointer instead of a Gemini session."""
+        the endpointer instead of a Gemini session. Source is selected by
+        DOORMAN_MIC_SOURCE: 'relay'/'webtrack' (default) pull DOORMAN_MIC_RTSP via
+        ffmpeg; 'http' uses the AD410's native getAudio intercom (zero-RTSP, needs
+        DOORMAN_DOORBELL_HOST/USER/PASSWORD). Both feed the same chunk handler so
+        VAD/endpoint/STT behave identically."""
+        mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
+        if mic_source == 'http':
+            log.info("local mic: AD410 HTTP getAudio source (zero-RTSP, gain=%.0fx limiter=%s)",
+                     mic_gain, mic_limiter)
+            await mic_loop_http()
+            return
         mic_rtsp = cfg.get('DOORMAN_MIC_RTSP') or cfg.get('CAM_MIC_RTSP')
         if not mic_rtsp:
             log.warning("local mic: no DOORMAN_MIC_RTSP/CAM_MIC_RTSP configured; mic disabled")
             return
-        t_open = time.monotonic()
         log.info("local mic: opening RTSP source %s (gain=%.0fx limiter=%s)",
                  (mic_rtsp or '').split('@')[-1], mic_gain, mic_limiter)
         proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain, limiter=mic_limiter)
         if proc is None:
-            log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - t_open)
+            log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - _t_open)
             return
-        log.info("local mic: RTSP audio open after %.1fs", time.monotonic() - t_open)
-        _cap = None
-        _cap_env = cfg.get('DOORMAN_LOCAL_DEBUG_CAPTURE')
-        if _cap_env:
-            import wave as _wave
-            _cap = _wave.open(_cap_env, 'wb')
-            _cap.setnchannels(1); _cap.setsampwidth(2); _cap.setframerate(SAMPLE_RATE)
-            log.info("local mic: capturing to %s", _cap_env)
-        acc = bytearray()
-        _seen_data = 0
-        _next_report = 50000          # log at >=50KB, then every 50KB
-        _last_data_t = time.monotonic()
-        _first_data_logged = False
-        _speech_reported = -10.0
+        log.info("local mic: RTSP audio open after %.1fs", time.monotonic() - _t_open)
         # Stall recovery: during a two-way session the AD410 wedges under
         # concurrent-stream load and the go2rtc relay delivers audio in bursts with
         # 4-12s gaps (verified 2026-09-19: STALLED 4.7/7.2/12.0/6.4s in one
@@ -633,13 +698,11 @@ async def run_interaction_local(system_prompt, trigger_text,
                     if proc is None:
                         log.warning("local mic: reopen probe failed (%d reopens)", _reopens + 1)
                         _reopens += 1
-                        _last_data_t = time.monotonic()
                         if _reopens > _max_reopens:
                             log.warning("local mic: gave up after %d reopens", _reopens)
                             break
                         await asyncio.sleep(3.0)
                         continue
-                    _last_data_t = time.monotonic()
                     log.info("local mic: RTSP audio (re)opened (reopen %d)", _reopens)
                     continue
                 try:
@@ -651,7 +714,6 @@ async def run_interaction_local(system_prompt, trigger_text,
                     except Exception: pass
                     proc = None
                     _reopens += 1
-                    _last_data_t = time.monotonic()
                     if _reopens > _max_reopens:
                         log.warning("local mic: gave up after %d reopens", _reopens)
                         break
@@ -662,7 +724,6 @@ async def run_interaction_local(system_prompt, trigger_text,
                     except Exception: pass
                     proc = None
                     _reopens += 1
-                    _last_data_t = time.monotonic()
                     continue
                 if not data:
                     log.warning("local mic: ffmpeg EOF -> reopening ffmpeg pull (reopen %d, total %d bytes)", _reopens + 1, _seen_data)
@@ -670,65 +731,42 @@ async def run_interaction_local(system_prompt, trigger_text,
                     except Exception: pass
                     proc = None
                     _reopens += 1
-                    _last_data_t = time.monotonic()
                     if _reopens > _max_reopens:
                         log.warning("local mic: gave up after %d reopens", _reopens)
                         break
                     continue
-                if _cap:
-                    try: _cap.writeframes(data)
-                    except Exception: pass
-                _now = time.monotonic()
-                if _now - _last_data_t > 3.0:
-                    log.warning("local mic: trickle - no audio data for %.1fs (total %d bytes)",
-                                _now - _last_data_t, _seen_data)
-                _last_data_t = _now
-                if not _first_data_logged:
-                    log.info("local mic: first audio data after %.1fs", _now - t_open)
-                    _first_data_logged = True
-                _seen_data += len(data)
-                if _seen_data >= _next_report:
-                    log.info("local mic: audio flowing (%d bytes total)", _seen_data)
-                    _next_report += 50000
-                # VAD-level visibility: has the endpointer seen any speech frames?
-                sp_frames = ep.speech_frame_count()
-                if sp_frames > 0 and _now - _speech_reported > 5.0:
-                    log.info("local mic: VAD flagged speech in %d frames so far", sp_frames)
-                    _speech_reported = _now
-                acc += data
-                while len(acc) >= VAD_FRAME_BYTES:
-                    frame = bytes(acc[:VAD_FRAME_BYTES])
-                    del acc[:VAD_FRAME_BYTES]
-                    if await speaking.muted():
-                        ep.push_frame(frame, muted=True)
-                        continue
-                    utter = ep.push_frame(frame, muted=False)
-                    # VAD-aware idle: refresh the activity clock while the visitor is
-                    # still mid-utterance (the endpointer has an open speech segment
-                    # >= min_speech_ms). This keeps long CONNECTED speech alive so the
-                    # idle watchdog cannot end the session mid-sentence. Without this,
-                    # the idle clock only advanced on finalized STT text; a visitor
-                    # talking in continuous phrases (never hitting the 700ms end-
-                    # silence) went idle at 40s and got cut off mid-sentence (verified
-                    # 2026-09-19: capture had loud continuous speech cap 26-68s but the
-                    # endpointer never finalized it, so the session ended idle). The
-                    # open segment only persists while VAD sees speech, so this does NOT
-                    # re-open the old "ambient noise keeps the session alive" bug: quiet
-                    # noise is an open segment of ~0ms (RMS-blip frames don't extend a
-                    # qualifying segment), and once the visitor stops, open_segment_ms
-                    # -> 0 and the clock starts counting again.
-                    if ep.open_segment_ms() >= ep.min_speech_ms:
-                        await activity.mark()
-                    if utter:
-                        await handle_utterance(utter)
+                await process_local_audio(data)
         except asyncio.CancelledError:
             pass
         finally:
-            if _cap:
-                try: _cap.close()
-                except Exception: pass
             try: proc.kill()
             except Exception: pass
+
+    async def mic_loop_http():
+        """AD410 native HTTP getAudio mic (DOORMAN_MIC_SOURCE=http). Zero-RTSP:
+        pulls the visitor's voice from the camera's own intercom instead of the
+        go2rtc RTSP relay, so it does not add a camera session on the AD410 that
+        wedges under concurrent-stream load. Chunks flow through the SAME
+        process_local_audio() handler as the relay mic, so VAD/endpoint/STT/
+        activity behave identically. Gain + limiter are applied (the door mic is
+        quiet). Reopen/stall recovery lives inside ab.getaudio_chunks()."""
+        log.info("local mic: getAudio stream up; streaming to endpointer")
+        gen = ab.getaudio_chunks(cfg, stop_ev,
+                                 gain=mic_gain, limiter=mic_limiter)
+        try:
+            async for chunk in gen:
+                await process_local_audio(chunk)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            # Explicit close on the live loop (see mic_from_http): tears down the
+            # HTTP response + session + ffmpeg when the task is cancelled instead
+            # of GC-ing them after the loop is gone.
+            try:
+                await gen.aclose()
+            except Exception:
+                pass
+        log.info("local mic: getAudio stream ended")
 
     async def handle_utterance(pcm16: bytes):
         log.info("local: endpoint, %d ms of audio", len(pcm16) // (SAMPLE_RATE // 500))

@@ -227,6 +227,256 @@ def _detect_audio_args(content_type: str, head: bytes) -> list:
     return ["-f", "alaw", "-ar", "8000", "-ac", "1"]
 
 
+# ---------------------------------------------------------------- mic via AD410 native HTTP getAudio (zero-RTSP)
+# DOORMAN_MIC_SOURCE=http. Unlike the go2rtc RTSP relay (mic_to_gemini), the
+# camera's own getAudio intercom opens NO RTSP session on the AD410, so it is a
+# safe fallback when the relay wedges under concurrent-stream load. The firmware
+# uses HTTP digest auth with a fresh challenge per open (nonce reuse is rejected).
+def _resp_close(resp):
+    """Close a streaming ClientResponse (sync in aiohttp; swallow everything)."""
+    try:
+        resp.close()
+    except Exception:
+        pass
+
+
+async def _open_getaudio(cfg, user=None, password=None):
+    """Open a streaming GET to the AD410's native getAudio intercom with HTTP
+    digest auth. Returns (session, response, content_type) where `response` is an
+    open 200 stream whose .content yields the raw audio bytes. The caller MUST
+    close response and session when done.
+
+    Digest flow (verified against the AD410): GET -> 401 challenge -> compute the
+    digest from that challenge for the SAME uri -> GET again with Authorization
+    -> 200 streaming. A fresh challenge is fetched on every open because the
+    firmware rejects nonce reuse. GETAUDIO_PATH is the live visitor-voice stream
+    (httptype=singlepart&channel=1)."""
+    import aiohttp
+    host = (cfg.get('DOORMAN_DOORBELL_HOST') or '').strip()
+    if not host:
+        raise RuntimeError("DOORMAN_DOORBELL_HOST not set")
+    user = user or (cfg.get('DOORMAN_DOORBELL_USER') or 'admin')
+    password = password or (cfg.get('DOORMAN_DOORBELL_PASSWORD') or '')
+    url = 'http://' + host + GETAUDIO_PATH
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=None, sock_read=30))
+    try:
+        # 1. fetch a FRESH challenge
+        r = await session.get(url)
+        ctype = r.headers.get('Content-Type', '')
+        if r.status == 200:
+            # some firmwares serve without a challenge; stream it directly
+            return session, r, ctype
+        if r.status != 401:
+            text = (await r.text())[:120]
+            _resp_close(r)
+            await session.close()
+            raise RuntimeError('getAudio: expected 401/200, got %s %s' % (r.status, text))
+        challenge = _parse_challenge(r.headers.get('WWW-Authenticate', ''))
+        _resp_close(r)
+        # 2. authorized streaming request (fresh connection, same uri)
+        digest = _digest_header('GET', url, challenge, user, password)
+        r2 = await session.get(url, headers={'Authorization': digest})
+        ctype = r2.headers.get('Content-Type', '')
+        if r2.status != 200:
+            text = (await r2.text())[:120]
+            _resp_close(r2)
+            await session.close()
+            raise RuntimeError('getAudio: auth request %s %s' % (r2.status, text))
+        return session, r2, ctype
+    except Exception:
+        try:
+            await session.close()
+        except Exception:
+            pass
+        raise
+
+
+async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
+                          gain=None, limiter=False):
+    """Async generator yielding `sample_bytes` of 16k s16le visitor speech from
+    the AD410's native HTTP getAudio intercom (zero-RTSP). Opens the stream,
+    pipes the raw codec through ffmpeg to 16k s16le, and yields fixed-size
+    chunks. Reopens when the stream drops, bounded by max_reopens; stops when
+    stop_ev is set. Low-level source shared by the Gemini mic (mic_from_http) and
+    the local-engine mic loop. `gain`/`limiter` mirror open_mic_ffmpeg (the door
+    mic is quiet; the local engine boosts it)."""
+    reopens = 0
+    while not stop_ev.is_set():
+        http_sess = None
+        resp = None
+        proc = None
+        pump_task = None
+        err_task = None
+        _fbits = []
+        acc = bytearray()
+        try:
+            http_sess, resp, ctype = await _open_getaudio(cfg, None, None)
+            # read a head so _detect_audio_args can identify the codec when the
+            # Content-Type is absent/unknown (ADTS sync word, etc.)
+            head = await resp.content.read(512)
+            if not head:
+                raise RuntimeError('getAudio: empty stream')
+            fargs = _detect_audio_args(ctype, head)
+            af_args = []
+            if gain:
+                af = 'volume=%s' % gain
+                if limiter:
+                    af += ',alimiter=limit=0.95:attack=5:release=50:level=false'
+                af_args = ['-af', af]
+            args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                    *fargs, '-i', 'pipe:0',
+                    '-vn', '-map', '0:a:0',
+                    *af_args,
+                    '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+                    '-f', 's16le', 'pipe:1']
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdin = proc.stdin
+            stdout = proc.stdout
+            stderr = proc.stderr
+            content = resp.content
+
+            async def _stderr_drain(pipe):
+                while True:
+                    try:
+                        e = await pipe.read(64)
+                    except Exception:
+                        return
+                    if not e:
+                        return
+                    _fbits.append(e)
+            err_task = asyncio.create_task(_stderr_drain(stderr))
+
+            async def _pump_in(pipe, stream):
+                try:
+                    pipe.write(head)
+                    await pipe.drain()
+                    while True:
+                        chunk = await stream.read(4096)
+                        if not chunk:
+                            break
+                        pipe.write(chunk)
+                        await pipe.drain()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+            pump_task = asyncio.create_task(_pump_in(stdin, content))
+
+            while not stop_ev.is_set():
+                data = await stdout.read(sample_bytes)
+                if not data:
+                    break
+                acc += data
+                while len(acc) >= sample_bytes:
+                    yield bytes(acc[:sample_bytes])
+                    del acc[:sample_bytes]
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("getaudio: %s", str(e)[:120])
+        finally:
+            if pump_task is not None:
+                pump_task.cancel()
+            if err_task is not None:
+                err_task.cancel()
+            if pump_task is not None:
+                try:
+                    await asyncio.wait_for(pump_task, timeout=2)
+                except Exception:
+                    pass
+            if err_task is not None:
+                try:
+                    await asyncio.wait_for(err_task, timeout=2)
+                except Exception:
+                    pass
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            if resp is not None:
+                _resp_close(resp)
+            if http_sess is not None:
+                try:
+                    await http_sess.close()
+                except Exception:
+                    pass
+            if _fbits:
+                log.warning("getaudio ffmpeg stderr: %s",
+                            b"".join(_fbits).decode(errors="replace")[:300])
+        if stop_ev.is_set():
+            return
+        reopens += 1
+        if reopens > max_reopens:
+            log.warning("getaudio: gave up after %d reopens", reopens)
+            return
+        log.info("getaudio: stream dropped, reopening (%d)", reopens)
+        await asyncio.sleep(1.5)
+
+
+async def mic_from_http(session, stop_ev, speaking, sample_bytes=3200):
+    """Feed the visitor's mic to Gemini from the AD410's native HTTP getAudio
+    intercom (DOORMAN_MIC_SOURCE=http). Opens NO RTSP session on the camera
+    (unlike mic_to_gemini's go2rtc relay), so it is the zero-RTSP fallback when
+    the relay wedges under concurrent-stream load. Echo-gated half-duplex is
+    preserved; source plumbing + reopen live in getaudio_chunks()."""
+    cfg = load_config()
+    from google.genai import types
+    log.info("mic: using AD410 HTTP getAudio source %s",
+             (cfg.get('DOORMAN_DOORBELL_HOST') or '').split('@')[-1])
+    _lvl_n = _lvl_peak = _lvl_muted = 0
+    gen = getaudio_chunks(cfg, stop_ev, sample_bytes)
+    try:
+        async for chunk in gen:
+            muted = await speaking.muted()
+            try:
+                import array as _arr
+                _s = _arr.array('h')
+                _s.frombytes(chunk)
+                _pk = max(abs(x) for x in _s) if len(_s) else 0
+            except Exception:
+                _pk = 0
+            _lvl_n += 1
+            if _pk > _lvl_peak:
+                _lvl_peak = _pk
+            if muted:
+                _lvl_muted += 1
+            if _lvl_n >= 20:
+                log.info("mic http: level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
+                         _lvl_peak, _lvl_n * 0.1, _lvl_muted, _lvl_n)
+                _lvl_n = 0
+                _lvl_peak = 0
+                _lvl_muted = 0
+            if muted:
+                continue
+            try:
+                await session.send_realtime_input(
+                    audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+            except Exception as e:
+                log.warning("mic http send_realtime_input err: %s", e)
+                break
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # Explicit close so the stream (HTTP response + session + ffmpeg) is torn
+        # down on the LIVE loop when we break out early / are cancelled, instead
+        # of being garbage-collected after the loop is gone ("Unclosed client
+        # session"). aclose() is a no-op if the generator already ended.
+        try:
+            await gen.aclose()
+        except Exception:
+            pass
+    log.info("mic capture stopped (http)")
+
+
 async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None, limiter=False):
     """Open the visitor-mic RTSP via ffmpeg -> 16k s16le on stdout, with the proven
     3x probe-retry (go2rtc cold sources deliver no data briefly). Returns the
