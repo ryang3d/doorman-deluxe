@@ -136,19 +136,6 @@ async def snapshot_front_door(cfg=None):
         return False, 'snapshot error: %s' % e
 
 
-def _latest_snapshot():
-    """Return the path of the most recently saved snapshot in the snapshot dir, or None."""
-    sdir = _snapshot_dir()
-    try:
-        files = [os.path.join(sdir, f) for f in os.listdir(sdir)
-                 if f.startswith('front_door_') and f.endswith('.jpg')]
-        if not files:
-            return None
-        return max(files, key=os.path.getmtime)
-    except Exception:
-        return None
-
-
 def _prune_snapshots():
     """Delete the oldest snapshots beyond the retention count (keep the N most recent).
 

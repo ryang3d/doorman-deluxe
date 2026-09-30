@@ -95,7 +95,6 @@ DEFAULTS = {
     # Task 3e). 'bare' is the tier-2 swap-in; it skips the poll loop in synthesize().
     # LOCAL-ENGINE ONLY: DOORMAN_VOICE_ENGINE=gemini ignores this key entirely —
     # the cloud Live path is byte-for-byte unchanged regardless of this value.
-    'DOORMAN_TTS_MODE': 'voicebox',
     # STT = standalone Parakeet v3 service we deploy (Task 2).
     'DOORMAN_STT_BASE_URL': 'http://127.0.0.1:10301',
     # Keep-warm cadence (seconds). Pings TTS + STT so cold starts (~22s TTS /
@@ -272,7 +271,6 @@ def load():
         'DOORMAN_TTS_PROFILE_ES': 'DOORMAN_TTS_PROFILE_ES',
         'DOORMAN_TTS_ENGINE_EN': 'DOORMAN_TTS_ENGINE_EN',
         'DOORMAN_TTS_ENGINE_ES': 'DOORMAN_TTS_ENGINE_ES',
-        'DOORMAN_TTS_MODE': 'DOORMAN_TTS_MODE',
         'DOORMAN_STT_BASE_URL': 'DOORMAN_STT_BASE_URL',
         'DOORMAN_KEEP_WARM_SETTLE_S': 'DOORMAN_KEEP_WARM_SETTLE_S',
         'DOORMAN_KEEP_WARM_INTERVAL_S': 'DOORMAN_KEEP_WARM_INTERVAL_S',

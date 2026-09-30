@@ -25,7 +25,7 @@ Run:
   python src/audio_bridge.py            # run one interaction until Ctrl-C / timeout
   python src/audio_bridge.py --once 30  # run a fixed-duration session then exit
 """
-import argparse, asyncio, json, logging, math, array, subprocess, sys, os, hashlib
+import argparse, asyncio, json, logging, subprocess, sys, hashlib
 from fractions import Fraction
 import websockets, aiohttp
 import av
@@ -43,11 +43,6 @@ def load_config():
     """Return the merged config dict (env > profile files > defaults)."""
     return _dc.load()
 
-
-def _cam_mic_rtsp(cfg=None):
-    """Doorbell mic RTSP from config (defaults to the verified AD410 capture path)."""
-    cfg = cfg or load_config()
-    return cfg['CAM_MIC_RTSP']
 
 # ---------------------------------------------------------------- Gemini Live session
 def voice_speech_config(cfg):
@@ -946,8 +941,6 @@ def record_doorbell_release(ts: float | None = None):
     import time as _time
     _PRESS_EDGE['ts_off'] = ts if ts is not None else _time.monotonic()
 
-def last_doorbell_press_ts():
-    return _PRESS_EDGE['ts_on']
 
 async def ring_settle_wait(cfg, settle_s=None, log=None):
     """Before opening the two-way backchannel, make sure the AD410 is in a state
