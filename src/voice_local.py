@@ -13,6 +13,7 @@ import asyncio, base64, io, json, logging, time, wave
 import numpy as np
 
 import doorman_config as _dc
+import transcripts as _tr
 
 log = logging.getLogger("doorman.local")
 
@@ -563,6 +564,7 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
             except json.JSONDecodeError:
                 args = {}
             log.info("[tool call] %s %s", fn, json.dumps(args)[:200])
+            _tr.msg('tool', 'tool: %s' % fn, kind='tool')
             if activity:
                 await activity.mark()
             if fn == 'notify_ryan':
@@ -866,6 +868,7 @@ async def run_interaction_local(system_prompt, trigger_text,
             lang = 'en'
         speaking._lang = lang            # TTS engine follows the chosen language
         log.info("[visitor said] %s (%s)", text, lang)
+        _tr.msg('visitor', text)
         try:
             reply, new_hist = await brain_turn(sysp, history, text, cfg,
                                                activity=activity)
@@ -878,6 +881,7 @@ async def run_interaction_local(system_prompt, trigger_text,
         if not reply:
             return
         log.info("[doorman said] %s", reply[:120])
+        _tr.msg('doorman', reply)
         try:
             await synthesize(reply, cfg, audio_q, speaking, activity=activity)
         except Exception as e:
@@ -893,6 +897,7 @@ async def run_interaction_local(system_prompt, trigger_text,
                                            activity=activity)
         history.extend(new_hist)
         if reply:
+            _tr.msg('doorman', reply)
             await synthesize(reply, cfg, audio_q, speaking, activity=activity)
     except Exception as e:
         log.warning("local prime failed: %s", e)
@@ -935,6 +940,7 @@ async def run_interaction_local(system_prompt, trigger_text,
         raise
     finally:
         log.info("ending local interaction")
+        _tr.end_session(status='ended')
         mic_task.cancel()
         try:
             await asyncio.wait_for(asyncio.gather(mic_task, return_exceptions=True), timeout=2)
