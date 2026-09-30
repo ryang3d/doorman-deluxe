@@ -367,16 +367,38 @@ def load():
 ENV_FILE_PATH = os.path.expanduser(os.environ.get('DOORMAN_ENV_FILE', '/app/.env'))
 
 
-def load_env_file(path=None):
-    """Populate os.environ from the .env file (file wins over existing env).
+def _env_namespace():
+    """Keys owned by the .env file (the UI-editable set). These are exactly the
+    keys the UI writes, so the file is authoritative for them on a re-exec.
+    Keys outside this namespace (set by Dockerfile ENV / compose environment,
+    e.g. DOORMAN_SNAPSHOT_DIR when that is the only source) are left alone."""
+    try:
+        import ui_schema
+        return set(ui_schema.field_map().keys())
+    except Exception:
+        return set()
 
-    Makes the bind-mounted host .env the single source of truth: a re-exec
-    re-reads it, so a UI 'restart' applies every setting without a container
-    recreate. Safe to call repeatedly; only keys present in the file are set.
-    Returns the parsed dict (empty if the file is missing).
+
+def load_env_file(path=None):
+    """Make the .env file the source of truth for the keys it owns.
+
+    For every key in the .env namespace (the UI-editable set): set it from the
+    file if present, otherwise REMOVE it from os.environ so a re-exec doesn't
+    linger on a value that was deleted from the file. Keys outside the
+    namespace (Dockerfile ENV / compose environment) are untouched. This is what
+    makes a UI 'restart' (in-place os.execv) apply every setting without a
+    container recreate. Safe to call repeatedly; returns the parsed dict
+    (empty if the file is missing).
     """
     path = path or ENV_FILE_PATH
     kv = _read_kv_file(path)   # reuse the #/blank/comment-aware reader
+    if not os.path.exists(path):
+        return kv              # missing file -> pure no-op (nothing set/dropped)
+    namespace = _env_namespace()
     for k, v in kv.items():
         os.environ[k] = v
+    # drop namespace keys that were removed from the file (file wins, both ways)
+    for k in namespace:
+        if k not in kv and k in os.environ:
+            del os.environ[k]
     return kv

@@ -35,9 +35,42 @@ def test_load_env_file_overrides_existing_env(tmp_path):
 
 
 def test_load_env_file_missing_is_noop(tmp_path):
-    # must not raise; returns empty dict
-    out = dc.load_env_file(str(tmp_path / 'nope.env'))
+    # must not raise; returns empty dict; does NOT drop namespace keys
+    f = str(tmp_path / 'nope.env')
+    os.environ['DOORMAN_ANIMAL_MAX_S'] = '45'
+    out = dc.load_env_file(f)
     assert out == {}
+    assert os.environ.get('DOORMAN_ANIMAL_MAX_S') == '45'   # untouched
+    os.environ.pop('DOORMAN_ANIMAL_MAX_S', None)
+
+
+def test_load_env_file_drops_keys_removed_from_file(tmp_path):
+    # .env is authoritative both ways: a namespace key absent from the file
+    # is dropped from os.environ (matters on re-exec, which inherits env).
+    f = tmp_path / '.env'
+    f.write_text('DOORMAN_ANIMAL_MAX_S=77\n')
+    try:
+        dc.load_env_file(str(f))
+        assert os.environ['DOORMAN_ANIMAL_MAX_S'] == '77'
+        # now remove it from the file and reload
+        f.write_text('# empty now\n')
+        dc.load_env_file(str(f))
+        assert 'DOORMAN_ANIMAL_MAX_S' not in os.environ
+    finally:
+        os.environ.pop('DOORMAN_ANIMAL_MAX_S', None)
+
+
+def test_load_env_file_leaves_non_namespace_keys_alone(tmp_path):
+    # keys outside the UI namespace (e.g. Dockerfile/compose-only keys) are
+    # not dropped just because they are absent from the .env file
+    f = tmp_path / '.env'
+    f.write_text('DOORMAN_UI_PORT=8123\n')
+    os.environ['DOORMAN_UNSET_IN_FILE_KEY_XYZ'] = 'keepme'
+    try:
+        dc.load_env_file(str(f))
+        assert os.environ['DOORMAN_UNSET_IN_FILE_KEY_XYZ'] == 'keepme'
+    finally:
+        os.environ.pop('DOORMAN_UNSET_IN_FILE_KEY_XYZ', None)
 
 
 def test_defaults_expose_ui_keys():
