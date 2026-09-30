@@ -77,8 +77,8 @@ are not set by anything in this repo:
 
     ```sh
     # disable the camera's local audio recording
-    curl -sg --digest -u "admin:<CAMERA_PASSWORD>" \
-      "http://<CAMERA_IP>/cgi-bin/configManager.cgi?action=setConfig&Record[0].SaveAudio=false"
+    curl -sg --digest -u "admin:<doorbell-pass>" \
+      "http://<camera-ip>/cgi-bin/configManager.cgi?action=setConfig&Record[0].SaveAudio=false"
     # returns: OK
     ```
 
