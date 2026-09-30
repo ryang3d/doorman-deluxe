@@ -106,6 +106,12 @@ def _current_values():
                 v = spec['default']
         elif spec['type'] == 'boolean':
             v = str(v).strip().lower() in ('true', '1', 'yes', 'on')
+        elif isinstance(v, (set, frozenset)):
+            # load() normalizes DOORMAN_IGNORED_FACES to a set; the form + .env
+            # use a comma-separated string, so round-trip it back to that form.
+            v = ','.join(sorted(v))
+        elif v is None:
+            v = spec['default']
         out[key] = v
     return out
 
@@ -204,6 +210,12 @@ async def api_restart(request):
                               'message': 'restarting; UI returns in ~2s'})
 
 
+async def api_restart_method_not_allowed(request):
+    # explicit GET so the router answers 405 instead of falling into the
+    # catch-all static route (which would 404 the unknown path)
+    raise web.HTTPMethodNotAllowed(request.method, {'POST'})
+
+
 # --------------------------------------------------------------- app
 def build_app():
     app = web.Application()
@@ -214,9 +226,10 @@ def build_app():
     app.router.add_get('/api/snapshot/{id}', api_snapshot)
     app.router.add_get('/api/config', api_config_get)
     app.router.add_post('/api/config', api_config_post)
+    app.router.add_get('/api/restart', api_restart_method_not_allowed)
     app.router.add_post('/api/restart', api_restart)
     ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
-    app.router.add_static('/', ui_dir, name='ui', index='index.html')
+    app.router.add_static('/', ui_dir, name='ui', show_index=True)
     return app
 
 
