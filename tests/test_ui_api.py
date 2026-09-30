@@ -122,3 +122,36 @@ async def test_restart_endpoint(client):
         r = await c.get('/api/restart')
         assert r.status == 405   # POST only
     # (POSTing for real would os.execv the test process, so GET/405 is the safe assert)
+
+
+@pytest.mark.asyncio
+async def test_notify_test_endpoint_sends_via_notify_ryan(client, monkeypatch):
+    import doorman_tools
+    sent = {}
+    async def fake_notify(message, cfg=None, image_path=None):
+        sent['message'] = message
+        sent['cfg'] = cfg
+        return True, 'notification sent'
+    monkeypatch.setattr(doorman_tools, 'notify_ryan', fake_notify)
+    async with await client as c:
+        r = await c.post('/api/notify-test', json={})
+        assert r.status == 200
+        d = await r.json()
+        assert d['ok'] is True
+        assert 'test notification' in sent['message'].lower()
+        # it called notify_ryan with the creds dict, not None
+        assert sent['cfg'] is not None and 'frigate_url' in sent['cfg']
+
+
+@pytest.mark.asyncio
+async def test_notify_test_endpoint_reports_failure(client, monkeypatch):
+    import doorman_tools
+    async def fake_notify_fail(message, cfg=None, image_path=None):
+        return False, 'notify failed: 500'
+    monkeypatch.setattr(doorman_tools, 'notify_ryan', fake_notify_fail)
+    async with await client as c:
+        r = await c.post('/api/notify-test', json={})
+        assert r.status == 200
+        d = await r.json()
+        assert d['ok'] is False
+        assert '500' in d['detail']

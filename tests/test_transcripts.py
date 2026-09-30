@@ -28,3 +28,26 @@ def test_history_most_recent_first(tmp_path):
     hist = tr.load_history()
     assert [h['recognized_name'] for h in hist] == ['B', 'A']
     assert hist[0]['message_count'] == 1
+
+def test_capture_session_snapshot_writes_file_and_sets_field(tmp_path, monkeypatch):
+    """capture_session_snapshot must fetch via the creds shape (FRIGATE_URL), not the
+    raw DOORMAN_* config - the old code passed ab.load_config() into
+    _frigate_snapshot_bytes which reads cfg['frigate_url'] -> KeyError -> silent None."""
+    _use_tmp_dir(str(tmp_path))
+    import doorman_tools as dt
+    import asyncio
+
+    captured = {}
+    async def fake_snapshot(creds):
+        captured.update(creds)
+        return b'\xff\xd8fake-jpeg'
+    monkeypatch.setattr(dt, '_frigate_snapshot_bytes', fake_snapshot)
+
+    s = tr.begin_session(trigger='doorbell', name='Ryan', engine='local')
+    path = asyncio.run(tr.capture_session_snapshot(None, s['session_id']))
+    assert path and os.path.exists(path)
+    assert open(path, 'rb').read() == b'\xff\xd8fake-jpeg'
+    assert tr.current()['snapshot'] == path
+    # the snapshot function received the creds dict (frigate_url shape), not a None
+    assert 'frigate_url' in captured
+    tr.end_session()   # keep isolation: don't leave a live session for other tests

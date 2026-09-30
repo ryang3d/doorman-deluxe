@@ -216,6 +216,21 @@ async def api_restart_method_not_allowed(request):
     raise web.HTTPMethodNotAllowed(request.method, {'POST'})
 
 
+async def api_notify_test(request):
+    # Send a real push to the homeowner's devices via the same path the
+    # notify_ryan tool uses (HA notify/all_devices). Lets the user verify the
+    # notification pipeline end-to-end from the UI.
+    try:
+        import doorman_tools
+        ok, val = await doorman_tools.notify_ryan(
+            'Doorman UI: test notification. If your phone buzzed, the '
+            'pipeline is healthy.',
+            doorman_tools._creds())
+        return web.json_response({'ok': bool(ok), 'detail': str(val)})
+    except Exception as e:
+        return web.json_response({'ok': False, 'detail': str(e)}, status=500)
+
+
 # --------------------------------------------------------------- app
 def build_app():
     app = web.Application()
@@ -228,6 +243,7 @@ def build_app():
     app.router.add_post('/api/config', api_config_post)
     app.router.add_get('/api/restart', api_restart_method_not_allowed)
     app.router.add_post('/api/restart', api_restart)
+    app.router.add_post('/api/notify-test', api_notify_test)
     ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
     async def _index(request):

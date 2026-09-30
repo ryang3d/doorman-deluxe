@@ -139,7 +139,10 @@ async def capture_session_snapshot(cfg, session_id):
     greeting. Writes to <DOORMAN_DATA_DIR>/snapshots/<id>.jpg."""
     try:
         import doorman_tools
-        data = await doorman_tools._frigate_snapshot_bytes(cfg)
+        # _frigate_snapshot_bytes wants the creds shape (cfg['frigate_url']), not
+        # the raw DOORMAN_* config that ab.load_config() returns. Build it the
+        # same way the model's snapshot tool does.
+        data = await doorman_tools._frigate_snapshot_bytes(doorman_tools._creds())
         if not data:
             return None
         d = os.path.join(_data_dir(), 'snapshots')

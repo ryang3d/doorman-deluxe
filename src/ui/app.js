@@ -133,7 +133,9 @@ async function renderDashboard() {
   const top = $('#top-status');
   top.textContent = s.version + ' · ' + s.engine + ' · up ' + fmtUptime(s.uptime_s);
 
-  view.replaceChildren(
+  // children can be null (idle -> no live banner / no live transcript);
+  // replaceChildren(null) would append a literal "null" text node.
+  view.replaceChildren(...[
     s.in_conversation && s.live_session
       ? h('div', { class: 'banner live' },
           h('span', { text: '●' }),
@@ -182,7 +184,7 @@ async function renderDashboard() {
                (s.live_session.recognized_name ? ' · ' + s.live_session.recognized_name : '') })),
            h('div', { class: 'transcript' }, (s.live_session.messages || []).map(msgNode))))
       : null,
-  );
+  ].filter(Boolean));
 }
 
 // ---------------------------------------------------------------- history
@@ -296,7 +298,8 @@ async function renderLive() {
     box,
   );
   const draw = () => {
-    tr.replaceChildren((s.messages || []).map(msgNode));
+    const msgs = (s.messages || []).map(msgNode);
+    tr.replaceChildren(...msgs);   // spread: replaceChildren(array) would stringify it
     tr.scrollTo(0, tr.scrollHeight);
   };
   draw();
@@ -322,6 +325,7 @@ function buildSettings() {
   const bar = h('div', { class: 'settings-bar' },
     h('span', { class: 'hint', id: 'dirty-hint', text: 'Changes apply live unless marked “restart”.' }),
     h('button', { class: 'btn ghost', id: 'revert-btn', onclick: revertSettings }, 'Revert'),
+    h('button', { class: 'btn ghost', id: 'test-notify-btn', onclick: sendTestNotification }, 'Test notification'),
     h('button', { class: 'btn', id: 'save-btn', onclick: saveSettings }, 'Save'),
   );
   root.append(bar);
@@ -420,6 +424,20 @@ function revertSettings() {
     }
   }
   updateDirtyHint();
+}
+
+async function sendTestNotification() {
+  const btn = $('#test-notify-btn');
+  if (btn) { btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Sending…'; }
+  try {
+    const r = await apiPost('/api/notify-test', {});
+    toast(r.ok ? 'Test notification sent — check your phone.'
+               : 'Notification failed: ' + r.detail, r.ok ? 'ok' : 'err');
+  } catch (e) {
+    toast('Notification failed: ' + e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Test notification'; }
+  }
 }
 
 function updateDirtyHint() {
