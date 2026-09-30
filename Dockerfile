@@ -20,5 +20,8 @@ COPY deploy/health_check.py deploy/
 RUN mkdir -p /snapshots
 ENV DOORMAN_SNAPSHOT_DIR=/snapshots
 
+# UI + transcripts data dir (DOORMAN_DATA_DIR); session snapshots + sessions.jsonl
+RUN mkdir -p /data/transcripts /data/snapshots
+
 # run the service (no args = subscribe to Frigate MQTT + serve door events forever)
 ENTRYPOINT ["python", "src/doorman.py"]

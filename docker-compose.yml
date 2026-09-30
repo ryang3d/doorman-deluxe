@@ -12,6 +12,8 @@ services:
     volumes:
       - doorman_snapshots:/snapshots
       - ./tmp:/tmp  # debug captures (DOORMAN_LOCAL_DEBUG_CAPTURE)
+      - doorman_data:/data  # transcripts + session snapshots (DOORMAN_DATA_DIR)
+      - ./.env:/app/.env  # UI reads/writes the host .env live
     environment:
       # must match the mounted volume path
       DOORMAN_SNAPSHOT_DIR: /snapshots
@@ -65,5 +67,6 @@ services:
 
 volumes:
   doorman_snapshots:
+  doorman_data:
   parakeet_models:
   whisper_models:
