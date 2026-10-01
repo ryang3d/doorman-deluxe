@@ -763,6 +763,6 @@ function route() {
 window.addEventListener('hashchange', route);
 document.addEventListener('DOMContentLoaded', () => {
   const footer = $('#footer');
-  footer.textContent = 'Doorman web UI · trusted LAN, no auth';
+  footer.innerHTML = 'Doorman<sup>DX</sup> web UI · trusted LAN, no auth';
   route();
 });
