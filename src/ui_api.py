@@ -24,11 +24,13 @@ import ui_schema as _schema
 import transcripts as _tr
 import prompts_store as _ps
 import doorman_prompt as _dp
+import frigate_clips as _clips
 
 log = logging.getLogger('doorman.ui')
 
 _PROCESS_START = time.time()
 _RESTART_FLAG = {'on': False}
+_CLIP_CACHE = {}   # session_id -> resolved event id (avoids re-resolving on repeat views)
 
 
 def _cfg():
@@ -90,6 +92,45 @@ async def api_snapshot(request):
     if not s or not s.get('snapshot') or not os.path.exists(s['snapshot']):
         return web.json_response({'error': 'no snapshot'}, status=404)
     return web.FileResponse(s['snapshot'])
+
+
+async def api_clip(request):
+    """Stream the Frigate clip matching a session (exact event id first,
+    time-overlap fallback). 200 video/mp4; 404 if no matching event with a
+    clip; 502 if Frigate is unreachable."""
+    sid = request.match_info['id']
+    ev = _CLIP_CACHE.get(sid)
+    if ev is None:
+        try:
+            resolved = await _clips.resolve_event_id(sid)
+        except Exception as e:
+            log.warning('clip resolve error for %s: %s', sid, e)
+            return web.json_response({'error': 'clip resolve failed'}, status=502)
+        if not resolved:
+            return web.json_response({'error': 'no matching frigate event with a clip'},
+                                     status=404)
+        ev = resolved['event_id']
+        _CLIP_CACHE[sid] = ev
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(_clip_url(ev),
+                             timeout=aiohttp.ClientTimeout(total=60)) as r:
+                if r.status != 200:
+                    return web.json_response(
+                        {'error': 'frigate clip fetch failed'}, status=502)
+                body = await r.read()
+        return web.Response(body=body,
+                            content_type='video/mp4',
+                            headers={'Content-Length': str(len(body))})
+    except Exception as e:
+        log.warning('clip stream error: %s', e)
+        return web.json_response({'error': 'frigate clip fetch failed'}, status=502)
+
+
+def _clip_url(event_id):
+    base = _cfg().get('FRIGATE_URL') or ''
+    return base.rstrip('/') + '/api/events/' + event_id + '/clip.mp4'
 
 
 # --------------------------------------------------------------- config
@@ -313,6 +354,7 @@ def build_app():
     app.router.add_get('/api/sessions/{id}', api_session)
     app.router.add_get('/api/live', api_live)
     app.router.add_get('/api/snapshot/{id}', api_snapshot)
+    app.router.add_get('/api/clip/{id}', api_clip)
     app.router.add_get('/api/config', api_config_get)
     app.router.add_post('/api/config', api_config_post)
     app.router.add_get('/api/restart', api_restart_method_not_allowed)
