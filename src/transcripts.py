@@ -28,7 +28,7 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 def begin_session(trigger='person', name=None, engine='gemini',
-                  doorbell=False, label=None):
+                  doorbell=False, label=None, frigate_event_id=None):
     """Start a session; returns the session dict. Idempotent-ish: overwrites."""
     global _CURRENT, _START_MONO
     _CURRENT = {
@@ -41,6 +41,7 @@ def begin_session(trigger='person', name=None, engine='gemini',
         'recognized_name': name,
         'engine': engine,
         'snapshot': None,
+        'frigate_event_id': frigate_event_id,
         'messages': [],
         'status': 'active',
         'ended_at': None,
@@ -113,6 +114,7 @@ def load_history(limit=50, offset=0):
                     'duration_s': o.get('duration_s'),
                     'message_count': len(o.get('messages', [])),
                     'has_snapshot': bool(o.get('snapshot')),
+                    'frigate_event_id': o.get('frigate_event_id'),
                 })
     rows.sort(key=lambda r: r['started_at'] or '', reverse=True)
     return rows[offset:offset + limit]
