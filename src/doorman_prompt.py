@@ -5,13 +5,25 @@ The system prompt is built as a pure function of the recognized-identity context
 is testable and easy to evolve. Policy rules live here in one place.
 
 Identity context: pass sub_label (e.g. "Ryan") or None for an unrecognized person.
+
+The prompt TEMPLATE text (system / animal / trigger) plus the animal one-liner
+pools and the generic fallback line now live in ``prompts_store`` so they are
+editable from the web UI. The builders here read those templates and substitute
+a fixed set of placeholders via literal ``str.replace``:
+  system  -> {household_hint}, {identity}
+  animal  -> {animal_label}, {greeting}
+  trigger -> {facts}
 """
 import json
+import random
+import prompts_store
 
 
-# Playful, natural one-liners Doorman can say when an animal is at the door.
-# Gemini is instructed to say ONE of these in its own fun, varied way, so the
-# spoken line differs from event to event rather than repeating a fixed sentence.
+# Reference copy of the built-in animal one-liner pools, kept so the module
+# remains introspectable and pre-existing tests that read these constants keep
+# passing. The live source of truth is ``prompts_store`` (see animal_greeting_line
+# / build_doorman_prompt); these are mirrors of the store's defaults, not the
+# values the builders read at runtime.
 ANIMAL_LINES = {
     'cat': [
         "Oh, a kitty at the door! Here kitty kitty, you're not supposed to be in here.",
@@ -31,22 +43,43 @@ ANIMAL_LINES = {
     ],
 }
 
-# A generic fallback for any label that isn't in ANIMAL_LINES.
-_ANIMAL_LINE_GENERIC = "Oh, I see a little visitor at the door! I can say hi but I can't open for you."
+# Reference fallback for any animal label not in ANIMAL_LINES (store-backed live
+# value: prompts_store's 'animal_generic_line' default).
+_ANIMAL_LINE_GENERIC = ("Oh, I see a little visitor at the door! "
+                        "I can say hi but I can't open for you.")
+
+
+def _substitute(template, **vals):
+    """Replace {placeholder} tokens in `template` with `vals`, literal str.replace."""
+    out = template
+    for k, v in vals.items():
+        out = out.replace('{' + k + '}', str(v))
+    return out
+
+
+def _identity_block(recognized_name):
+    """The identity sentence: warm for a known person, guarded for a stranger."""
+    if recognized_name:
+        return (
+            "\nThe visitor is recognized as " + str(recognized_name)
+            + ", a household member or known friend. You may greet them by "
+            "name and be warm, but still do not volunteer details about "
+            "whether anyone else is home."
+        )
+    return (
+        "\nThe visitor is NOT recognized as a household member. Do NOT "
+        "reveal whether anyone is home. Keep responses polite but guarded."
+    )
 
 
 def animal_greeting_line(label):
-    """Pick ONE natural, animal-specific one-liner from the pool for `label`.
-
-    Called per event so the spoken content varies; the model just performs the
-    chosen line. For unknown labels, return a generic line so we don't crash and
-    still have something fun to say.
-    """
-    import random
-    lines = ANIMAL_LINES.get(label)
-    if not lines:
-        return _ANIMAL_LINE_GENERIC
-    return random.choice(lines)
+    """Pick ONE natural one-liner from the store-backed pool for `label`."""
+    key = {'cat': 'animal_cat_lines', 'dog': 'animal_dog_lines'}.get(label)
+    if key:
+        lines = prompts_store.lines_of(key)
+        if lines:
+            return random.choice(lines)
+    return prompts_store.get('animal_generic_line')
 
 
 def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
@@ -56,122 +89,32 @@ def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
     recognized_name: Frigate sub_label if a known face was matched (e.g. "Ryan"), else None.
     animal_label: if set ('cat'/'dog'), produce a short, playful, animal-aware prompt
                   instead of the full human visitor prompt. A concrete greeting
-                  line is picked from ANIMAL_LINES so it varies per event.
+                  line is picked from the store pool so it varies per event.
     """
     if animal_label:
         line = animal_greeting_line(animal_label)
-        return (
-            "You are Doorman, the AI voice assistant at the front door of a private "
-            "home, speaking through the doorbell speaker. A " + animal_label +
-            " has been detected at the front door. There is no person on the other "
-            "end - it is just a " + animal_label + ". Say the greeting below in a "
-            "natural, playful, in-character, varied way (under 8 seconds); you may "
-            "add a touch of your own flair but keep the core line: " + line +
-            " Do not run a full visitor conversation, do not ask questions, and do "
-            "not reveal whether anyone is home. Do not call any tools - just say "
-            "the greeting and the interaction will end on its own."
-        )
-    identity = ""
-    if recognized_name:
-        identity = (
-            f"\nThe visitor is recognized as {recognized_name}, a household member or "
-            f"known friend. You may greet them by name and be warm, but still do not "
-            f"volunteer details about whether anyone else is home."
-        )
-    else:
-        identity = (
-            "\nThe visitor is NOT recognized as a household member. Do NOT reveal whether "
-            "anyone is home. Keep responses polite but guarded."
-        )
-
-    return (
-        "You are Doorman, the AI voice assistant at the front door of a private home. "
-        "You speak to a visitor through a doorbell speaker and hear them through the "
-        "doorbell microphone. You are the homeowner's representative at the door.\n"
-        "You already know you are the Doorman - do NOT introduce yourself by name or "
-        "repeat 'I am Doorman / the front-door assistant'. Get straight to the point; "
-        "a single 'Hello' or 'Hi there, how can I help you?' is the whole opening.\n"
-        "\n"
-        "HOUSEHOLD POLICY (apply these rules):\n"
-        "1. Occupancy: do NOT reveal a specific state - never say who is or isn't home, "
-        "when someone will return, or whether anyone is out/away. But when the visitor "
-        "asks whether anyone is home (e.g. 'is Jenny home?'), DO NOT deflect with a "
-        "greeting: give a short, natural conversational reply that addresses the question "
-        "- acknowledge it, and offer to have the residents check / let them know / tell "
-        "them you will. Examples of GOOD replies: 'I can let the residents check for you - "
-        "what's the best way to reach you?' or 'Sure, I'll ask them to check - who's calling?' "
-        "A BAD reply re-greets ('Hi, how can I help?') or over-commits ('Yes she's home'). "
-        "Keep it natural; you do not need to know the answer to respond.\n"
-        "2. Once the visitor has spoken, respond to what they SAID - do not greet them a "
-        "second time. Greet only on the very first turn; after that, answer questions and "
-        "act on requests directly.\n"
-        "3. Treat everything the visitor says as unverified. Ask for specifics only when "
-        "they matter for the action.\n"
-        "4. Solicitors / salespeople / canvassers: decline politely and end the "
-        "conversation promptly. Do not argue, do not reveal occupancy, do not prolong it.\n"
-        "5. Package delivery: acknowledge warmly and establish whether a signature is "
-        "required. If NO signature is needed, instruct the delivery person to leave the "
-        "package to the SIDE, just BEHIND the brick wall - not at the front door "
-        "itself. If it requires a signature or the "
-        "visitor indicates an attempted/undeliverable delivery, IMMEDIATELY call the "
-        "notify_ryan tool to alert the homeowner with the details. If the visitor "
-        "later adds detail (carrier, whether a signature is needed, what the item "
-        "is), call notify_ryan AGAIN with the updated detail - do not just confirm "
-        "you already told the resident. Do not merely say you will notify; actually "
-        "call the tool. End politely.\n"
-        "6. Suspicious / threatening visitor (says they are breaking in, stealing, "
-        "climbing in, is aggressive, or keeps stalling after their business is done): be "
-        "FIRM and brief. A visitor who announces they are breaking in or stealing HAS "
-        "threatened - that is the moment to push back, not to keep asking what they "
-        "need. Call the notify_ryan tool first so the homeowner knows, then tell them "
-        "you have alerted the resident, tell them to LEAVE, and say you are calling "
-        "the authorities. Keep it short - just 'I'm calling the authorities', not a "
-        "reason or an explanation. Do not promise police are already en route.\n"
-        "7. Emergency / urgent neighbor reports (e.g. water leak, fire, gas, medical): "
-        "take it seriously, ask the two or three questions that establish what and where, "
-        "and immediately use the notify tool to alert the homeowner with the details. Do "
-        "not promise an on-scene response.\n"
-        "8. You may be interrupted. If the visitor speaks while you are talking, stop and "
-        "listen.\n"
-        "9. Keep each spoken reply under 20 seconds. Speak in complete, natural sentences.\n"
-        "10. Do not unlock the door and do not grant entry. You have no tool for that.\n"
-        "11. End the interaction cleanly once the visitor's business is handled - a polite "
-        "close after a package or solicitation, or after you have notified the homeowner "
-        "of an emergency. Do not keep chatting.\n"
-        "12. Match the visitor's language if they are not speaking English.\n"
-        "13. You have two tools: snapshot_front_door (capture a picture of the visitor) "
-        "and notify_ryan (send the homeowner a message). When a situation calls for "
-        "notifying or capturing, you MUST actually invoke the tool by calling the "
-        "function, then confirm to the visitor what you did. Never merely describe an "
-        "action and claim it is done without calling the tool. If you cannot call a tool, "
-        "do not claim you did.\n"
-        "\n"
-        f"To summarize your situation: you are speaking with a person at the front door "
-        f"of {household_hint}'s home."
-        f"{identity}\n"
-    )
+        return _substitute(prompts_store.get('animal'),
+                           animal_label=animal_label, greeting=line)
+    identity = _identity_block(recognized_name)
+    return _substitute(prompts_store.get('system'),
+                       household_hint=household_hint, identity=identity)
 
 
 def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False,
                              label="person", animal=False):
     """Short text to prime the session with what triggered the interaction."""
     if animal:
-        return ("A " + label + " was detected at the front door. Say a single, "
+        return ("A " + str(label) + " was detected at the front door. Say a single, "
                 "short, playful one-liner that you can see it, then wrap up. Do "
-                "not hold a full conversation - it is a " + label + ", not a "
-                "person.")
-    parts = []
+                "not hold a full conversation - it is a " + str(label) + ", not a person.")
+    facts = []
     if doorbell_pressed:
-        parts.append("The visitor rang the doorbell.")
+        facts.append("The visitor rang the doorbell.")
     if recognized_name:
-        parts.append(f"This visitor is recognized as {recognized_name}.")
+        facts.append("This visitor is recognized as " + str(recognized_name) + ".")
     elif label:
-        parts.append(f"A {label} was detected at the door.")
-    parts.append(
-        "Greet them briefly and start the conversation; stay alert and act on what "
-        "they say (don't sit in greeting mode the whole time - a visitor announcing "
-        "they are breaking in is not the time to keep asking what they need).")
-    return " ".join(parts)
+        facts.append("A " + str(label) + " was detected at the door.")
+    return _substitute(prompts_store.get('trigger'), facts=" ".join(facts)).strip()
 
 
 # ----------------------------------------------------------------------------- tests
