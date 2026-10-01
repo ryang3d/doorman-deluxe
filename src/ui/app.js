@@ -247,11 +247,8 @@ function histItem(sum) {
   return h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
     h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
     h('div', { class: 'name' }, who),
-    h('div', { class: 'meta' },
-      (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') + sum.message_count + ' msg',
-      sum.frigate_event_id
-        ? h('span', { class: 'tag clip-tag', text: ' · clip' })
-        : null),
+    h('div', { class: 'meta', text:
+      (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') + sum.message_count + ' msg' }),
     sum.has_snapshot
       ? h('img', { class: 'snap', src: '/api/snapshot/' + sum.session_id, alt: 'snapshot',
                   loading: 'lazy',
