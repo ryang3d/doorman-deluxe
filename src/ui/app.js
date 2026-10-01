@@ -163,11 +163,10 @@ function msgNode(m) {
 
 function summaryLine(sum) {
   if (!sum) return 'No visits yet';
-  // when · duration · msg-count. The "who" (name / trigger-aware label) is
-  // shown separately in the name field, so it is not repeated here.
-  return fmtWhen(sum.started_at) +
-    (sum.duration_s != null ? ' · ' + fmtDur(sum.duration_s) : '') +
-    ' · ' + sum.message_count + ' msg';
+  // duration · msg-count. Shown in the "Last visit" card meta, next to the
+  // separate `.when` timestamp field (so the time is not repeated here).
+  return (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') +
+    sum.message_count + ' msg';
 }
 
 async function renderDashboard() {
