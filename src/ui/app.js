@@ -135,6 +135,7 @@ function toast(msg, kind) {
 // ---------------------------------------------------------------- state
 const view = $('#view');
 let currentTab = null;
+let sessionParent = 'dashboard';   // which list a session was opened from (dashboard | history)
 
 // ---------------------------------------------------------------- dashboard
 function healthDotClass(s) {
@@ -732,7 +733,16 @@ function route() {
   const hash = location.hash || '#dashboard';
   const m = hash.match(/^#session\/(.+)$/);
   const tab = m ? 'session' : hash.slice(1) || 'dashboard';
-  const parentTab = tab === 'session' ? 'dashboard' : tab;   // session belongs under the dashboard tab
+  // A session is viewed *under* whichever list it was opened from (the
+  // dashboard's "last visit" card or the history tab). Track that so the
+  // correct tab stays highlighted and Back returns to the right list.
+  let parentTab;
+  if (tab === 'session') {
+    parentTab = sessionParent;
+  } else {
+    parentTab = tab;
+    if (tab === 'dashboard' || tab === 'history') sessionParent = tab;
+  }
   currentTab = tab;
 
   $$('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === parentTab || (tab === 'live' && a.dataset.tab === 'dashboard')));
