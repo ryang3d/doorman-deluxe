@@ -162,7 +162,8 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     _trg = ('doorbell' if meta.get('doorbell_pressed')
             else ('animal' if _label in ANIMAL_LABELS else 'person'))
     _tr.begin_session(trigger=_trg, name=meta.get('name'), engine=_engine,
-                      doorbell=bool(meta.get('doorbell_pressed')), label=_label)
+                      doorbell=bool(meta.get('doorbell_pressed')), label=_label,
+                      frigate_event_id=meta.get('frigate_event_id'))
     _sess_id = _tr.current()['session_id'] if _tr.current() else None
     if _sess_id:
         try:
@@ -400,7 +401,7 @@ def _decide_trigger_action(label, animal_behavior):
     return 'person'
 
 
-async def animal_reaction(label, cfg, behavior):
+async def animal_reaction(label, cfg, behavior, event_id=None):
     """Animal reaction: notify Ryan (attaches a fresh doorbell frame), and for
     'voice' run a short, animal-aware voice session. The caller has already
     passed the camera-health gate before invoking this."""
@@ -420,7 +421,8 @@ async def animal_reaction(label, cfg, behavior):
         await asyncio.wait_for(
             run_interaction(aprompt, atrigger, duration_s=ANIMAL_MAX_S,
                             idle_timeout_s=IDLE_TIMEOUT_S,
-                            meta={'label': label, 'name': None}),
+                            meta={'label': label, 'name': None,
+                                  'frigate_event_id': event_id}),
             timeout=ANIMAL_MAX_S + 15)
     except asyncio.TimeoutError:
         log.warning("animal interaction overran cap")
@@ -562,7 +564,9 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         trigger_text = doorman_prompt.interaction_trigger_text(
             recognized_name=recognized, doorbell_pressed=False, label=label)
         prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
-        await handle_event(prompt, trigger_text, {'label': label, 'name': recognized})
+        await handle_event(prompt, trigger_text,
+                           {'label': label, 'name': recognized,
+                            'frigate_event_id': event_id})
 
     # Ticker so the trigger decision re-checks even when Frigate goes quiet.
     # Frigate only pushes events when a tracked object changes; for a stationary
@@ -630,7 +634,9 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                 trigger_text = doorman_prompt.interaction_trigger_text(
                     recognized_name=None, doorbell_pressed=False, label=label)
                 prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                await handle_event(prompt, trigger_text, {'label': label, 'name': None})
+                await handle_event(prompt, trigger_text,
+                                   {'label': label, 'name': None,
+                                    'frigate_event_id': event_id})
             elif etype == 'new' and label in ANIMAL_LABELS:
                 if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
                     log.info("trigger debounced (cooldown)")
@@ -640,7 +646,9 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                 trigger_text = doorman_prompt.interaction_trigger_text(
                     recognized_name=None, doorbell_pressed=False, label=label)
                 prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                await handle_event(prompt, trigger_text, {'label': label, 'name': None})
+                await handle_event(prompt, trigger_text,
+                                   {'label': label, 'name': None,
+                                    'frigate_event_id': event_id})
             # expire nothing; simple path
             expired = [eid for eid, p in pending.items()
                        if (now - p.get('new_ts', 0)) > 60]
@@ -774,7 +782,10 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
                             trigger_text = doorman_prompt.interaction_trigger_text(
                                 recognized_name=None, doorbell_pressed=True, label='person')
                             prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                            await handle_event(prompt, trigger_text, {'label': 'person', 'name': None, 'doorbell_pressed': True})
+                            await handle_event(prompt, trigger_text,
+                                               {'label': 'person', 'name': None,
+                                                'doorbell_pressed': True,
+                                                'frigate_event_id': None})
                     elif ev_type == 'result' and msg.get('id') == 1:
                         pass  # subscription confirmed
                     elif ev_type == 'ping':
@@ -1034,7 +1045,8 @@ async def amain(args):
         except Exception as e:
             log.warning("camera health gate error: %s; proceeding", e)
         if action in ('animal-voice', 'animal-notify'):
-            await animal_reaction(label, cfg, behavior)
+            await animal_reaction(label, cfg, behavior,
+                                  event_id=meta.get('frigate_event_id'))
             log.info("animal reaction done (%s, %s)", label, behavior)
             return
         # launch interaction; serialize so we don't overlap. End early if the visitor
