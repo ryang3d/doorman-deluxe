@@ -199,6 +199,10 @@ An in-container web UI (aiohttp, no build step, offline) ships with the service:
 - **Tabs:** Dashboard (camera health, engine, trigger, last visit, live "in a conversation" indicator + live transcript), History (visits with snapshot thumbnails, click through to the transcript), Settings (all keys, grouped, with hot/restart badges).
 - **Settings model.** Saving writes `.env`. Keys are either *hot* (re-read at the point of use, so the change takes effect on the next interaction without a restart) or *restart-required* (frozen into the process at start). The form flags each, and when a restart is needed it offers **Restart to apply**, which re-execs the process in place (same container - no recreate). `.env` is the source of truth both ways: a key present in the file wins, and a key removed from the file is dropped on the next start.
 - **Transcripts** are recorded from both voice engines (the same spots that log `[visitor said]` / `[doorman said]` / `[tool call]`), stored as `sessions.jsonl` under `DOORMAN_DATA_DIR` (the `doorman_data` volume in docker, mounted `/data`), with a per-visit snapshot alongside.
+- **Video clips:** the session detail view plays the matching Frigate clip
+  (the event that triggered the interaction; falls back to the closest
+  overlapping front-door event with a clip). The clip endpoint proxies the
+  clip; nothing is stored locally.
 - **Prompts tab:** view and edit all of Doorman's prompt texts (main system prompt, animal-greeting prompt, the cat + dog one-liner greeting pools, the generic animal fallback line, the session trigger/prime line, and the local-engine notes). Values persist to `/data/prompts.json`; edits apply on the next interaction (no restart). A live preview shows the rendered main prompt for a recognized vs unknown visitor.
 
 New `.env` keys: `DOORMAN_UI_PORT` (default `8090`), `DOORMAN_UI_ENABLED` (default `true`), `DOORMAN_DATA_DIR` (default `/data`). The data dir also holds `prompts.json` — user overrides for the Prompts tab (see above); any key absent from the file falls back to the built-in default.

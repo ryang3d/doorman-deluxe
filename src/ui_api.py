@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/sessions/{id}   full session (transcript + metadata)
   GET  /api/live            the in-progress session, if any
   GET  /api/snapshot/{id}   per-session snapshot image
+  GET  /api/clip/{id}       Frigate clip matching a session (proxy; 404 if none)
   GET  /api/config          config form schema + current values
   POST /api/config          write .env + hot-apply; reports restart-required
   POST /api/restart         re-exec the process in place (applies restart keys)
