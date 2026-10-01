@@ -337,3 +337,14 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   .snap-pane { border-left: none; border-top: 1px solid var(--border); }
   .row { grid-template-columns: 1fr; }
 }
+
+/* ---------- prompts ---------- */
+.prompt-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.prompt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.prompt-title { font-weight: 600; font-size: 14px; }
+.prompt-card .help { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.prompt-area { width: 100%; min-height: 220px; resize: vertical; background: var(--panel-2, #111); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; }
+.prompt-area:focus { outline: none; border-color: var(--accent-dim); }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
+.prompt-preview { background: var(--panel-2, #111); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; margin: 8px 0 0; }
+.prompt-head .tag { display: inline-block; font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }

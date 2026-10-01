@@ -356,6 +356,7 @@ async function renderLive() {
 // actually edited (or cleared) the field.
 let settingsCache = null;   // {key: spec-dict + dirty}
 let settingsInputs = {};    // {key: {input, spec}}
+let promptsState = null;   // {key: {spec, input, dirty}}
 
 function buildSettings() {
   const fields = settingsCache ? Object.values(settingsCache) : [];
@@ -572,6 +573,124 @@ async function renderSettings() {
   buildSettings();
 }
 
+// ---------------------------------------------------------------- prompts
+async function renderPrompts() {
+  view.replaceChildren(h('div', { class: 'muted-line', text: 'Loading prompts…' }));
+  promptsState = {};
+  let d;
+  try {
+    d = await apiGet('/api/prompts');
+  } catch (e) {
+    view.replaceChildren(h('div', { class: 'muted-line', text: 'Prompts unavailable: ' + e.message }));
+    return;
+  }
+  const bar = h('div', { class: 'settings-bar' },
+    h('span', { class: 'hint', text: 'Edits apply on the next interaction (no restart).' }),
+    h('button', { class: 'btn ghost', id: 'p-revert', onclick: pRevert }, 'Revert'),
+    h('button', { class: 'btn', id: 'p-save', onclick: pSave }, 'Save'),
+  );
+  const root = h('div', {});
+  root.append(bar);
+
+  const LABELS = {
+    system: 'Main system prompt',
+    animal: 'Animal greeting prompt',
+    animal_cat_lines: 'Cat one-liners (greeting pool)',
+    animal_dog_lines: 'Dog one-liners (greeting pool)',
+    animal_generic_line: 'Generic animal fallback line',
+    trigger: 'Session trigger / prime line',
+    local_notes: 'Local-engine notes (local LLM only)',
+  };
+  const HELP = {
+    system: 'Tokens: {household_hint}, {identity}. This is the household-policy prompt used by both engines.',
+    animal: 'Tokens: {animal_label}, {greeting}. {greeting} is auto-filled from the one-liner pools below.',
+    animal_cat_lines: 'One greeting per line. A random line is picked as {greeting} when a cat is detected.',
+    animal_dog_lines: 'One greeting per line. A random line is picked as {greeting} when a dog is detected.',
+    animal_generic_line: 'Fallback line used when the detected label is not cat or dog.',
+    trigger: 'Token: {facts} (auto-filled with doorbell / recognized / label context).',
+    local_notes: 'Appended to the main prompt when DOORMAN_VOICE_ENGINE=local.',
+  };
+
+  for (const key of d.order) {
+    const e = d.prompts[key];
+    const card = h('div', { class: 'prompt-card' },
+      h('div', { class: 'prompt-head' },
+        h('span', { class: 'prompt-title', text: LABELS[key] || key }),
+        (e.text !== e.default ? h('span', { class: 'tag', text: 'edited' }) : null),
+        h('button', { class: 'btn ghost sm', onclick: () => pReset(key) }, 'Reset to default')),
+      h('div', { class: 'help', text: HELP[key] || '' }),
+      h('textarea', { class: 'prompt-area', spellcheck: 'false',
+                      oninput: () => pDirty(key) }),
+    );
+    const ta = card.querySelector('.prompt-area');
+    ta.value = e.text;
+    promptsState[key] = { spec: e, input: ta, dirty: false };
+    root.append(card);
+  }
+  root.append(h('div', { class: 'prompt-card' },
+    h('div', { class: 'prompt-head' }, h('span', { class: 'prompt-title', text: 'Preview (rendered)' })),
+    h('div', { class: 'help', text: 'What the main system prompt will actually be, for a recognized visitor vs an unknown one. Refreshes when you save.' })),
+  );
+  root.append(h('pre', { class: 'prompt-preview', id: 'p-preview-recognized', text: '…' }));
+  root.append(h('pre', { class: 'prompt-preview', id: 'p-preview-unknown', text: '…' }));
+
+  view.replaceChildren(root);
+  pRefreshPreview();
+}
+
+function pDirty(key) {
+  promptsState[key].dirty = true;
+}
+
+async function pRefreshPreview() {
+  const sys = promptsState['system'] ? promptsState['system'].input.value : '';
+  try {
+    const r = await apiPost('/api/prompts/preview', { system: sys });
+    const a = $('#p-preview-recognized'); if (a) a.textContent = r.system.recognized;
+    const b = $('#p-preview-unknown'); if (b) b.textContent = r.system.unknown;
+  } catch (e) { /* preview is best-effort */ }
+}
+
+async function pReset(key) {
+  const rec = promptsState[key];
+  if (!rec) return;
+  if (!confirm('Reset this prompt to the built-in default?')) return;
+  try {
+    const r = await apiPost('/api/prompts/reset', { key });
+    if (r.ok) { rec.input.value = rec.spec.default; rec.dirty = false; pRefreshPreview(); }
+    else toast('Nothing to reset for ' + key, 'err');
+  } catch (e) { toast('Reset failed: ' + e.message, 'err'); }
+}
+
+function pRevert() {
+  for (const key of Object.keys(promptsState)) {
+    const rec = promptsState[key];
+    rec.input.value = rec.spec.text;   // last-loaded server value
+    rec.dirty = false;
+  }
+  pRefreshPreview();
+}
+
+async function pSave() {
+  const dirty = Object.keys(promptsState).filter(k => promptsState[k].dirty);
+  if (!dirty.length) { toast('Nothing to save.'); return; }
+  const values = {};
+  for (const k of dirty) values[k] = promptsState[k].input.value;
+  const btn = $('#p-save'); btn.disabled = true;
+  try {
+    const r = await apiPost('/api/prompts', { values });
+    for (const k of Object.keys(values)) {
+      const rec = promptsState[k];
+      rec.spec.text = values[k];   // server now stores this
+      rec.dirty = false;
+    }
+    toast('Saved — applies on the next interaction.', 'ok');
+    pRefreshPreview();
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'err');
+  } finally { btn.disabled = false; }
+}
+
 // ---------------------------------------------------------------- router
 let timers = [];   // active setInterval ids for the current view
 function stopTimers() { timers.forEach(clearInterval); timers = []; }
@@ -595,6 +714,8 @@ function route() {
     renderSession(decodeURIComponent(m[1]));
   } else if (tab === 'live') {
     renderLive();
+  } else if (tab === 'prompts') {
+    renderPrompts();
   } else if (tab === 'settings') {
     renderSettings();
   } else {
