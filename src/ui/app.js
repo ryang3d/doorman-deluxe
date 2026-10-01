@@ -235,8 +235,11 @@ function histItem(sum) {
     h('div', { class: 'name' },
       who,
       h('span', { class: 'tag', text: ' · ' + sum.trigger })),
-    h('div', { class: 'meta', text:
-      (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') + sum.message_count + ' msg' }),
+    h('div', { class: 'meta' },
+      (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') + sum.message_count + ' msg',
+      sum.frigate_event_id
+        ? h('span', { class: 'tag clip-tag', text: ' · clip' })
+        : null),
     sum.has_snapshot
       ? h('img', { class: 'snap', src: '/api/snapshot/' + sum.session_id, alt: 'snapshot',
                   loading: 'lazy',
@@ -300,6 +303,19 @@ async function renderSession(id) {
         (s.messages && s.messages.length)
           ? h('div', { class: 'transcript' }, s.messages.map(msgNode))
           : h('div', { class: 'transcript' }, h('div', { class: 'muted-line', text: 'No transcript.' })),
+        s.frigate_event_id
+          ? h('div', { class: 'clip-pane' },
+              h('label', { class: 'clip-label', text: 'Frigate clip' }),
+              h('video', { controls: true, preload: 'metadata',
+                           poster: s.snapshot ? '/api/snapshot/' + s.session_id : '',
+                           src: '/api/clip/' + encodeURIComponent(s.session_id),
+                           onerror() {
+                             this.replaceWith(h('div', { class: 'no-snap', text: 'Clip unavailable' }));
+                           } }),
+              h('a', { class: 'clip-dl', href: '/api/clip/' + encodeURIComponent(s.session_id),
+                       target: '_blank', text: 'Open in new tab' })
+            )
+          : null,
         h('div', { class: 'snap-pane' },
           s.snapshot
             ? h('img', { src: '/api/snapshot/' + s.session_id, alt: 'Snapshot',
