@@ -276,6 +276,7 @@ A living list of features being worked on, roughly ordered by priority and group
 - [ ] **Pre-recognition ignore gate** - skip an ignored face the moment it is detected instead of after the recognition wait.
 - [ ] **Door lock** - recognized face + "open the door" intent + you're home unlocks the entry lock.
 - [ ] **Delivery / package mode** - detect a package, frame it in the notification, and offer an optional "leave it with me" flow.
+- [ ] **Configurable notifications** - control who is alerted, when, and with what content (visitor statement vs. summary, delivery vs. person, quiet hours, per-recipient rules) instead of the current single always-on phone push.
 
 ### Ops & visibility
 
