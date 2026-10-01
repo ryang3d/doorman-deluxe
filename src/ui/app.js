@@ -163,8 +163,9 @@ function msgNode(m) {
 
 function summaryLine(sum) {
   if (!sum) return 'No visits yet';
-  const who = whoLabel(sum);
-  return who + ' · ' + sum.trigger + ' · ' + fmtWhen(sum.started_at) +
+  // when · duration · msg-count. The "who" (name / trigger-aware label) is
+  // shown separately in the name field, so it is not repeated here.
+  return fmtWhen(sum.started_at) +
     (sum.duration_s != null ? ' · ' + fmtDur(sum.duration_s) : '') +
     ' · ' + sum.message_count + ' msg';
 }
@@ -219,9 +220,8 @@ async function renderDashboard() {
             h('div', { class: 'name' },
               s.last_visit.recognized_name
                 ? s.last_visit.recognized_name
-                : h('span', { class: 'tag', text: whoLabel(s.last_visit) }),
-              ' ', h('span', { class: 'tag', text: '· ' + s.last_visit.trigger })),
-            h('div', { class: 'meta', text: summaryLine(s.last_visit).split(' · ').slice(1).join(' · ') }),
+                : h('span', { class: 'tag', text: whoLabel(s.last_visit) })),
+            h('div', { class: 'meta', text: summaryLine(s.last_visit) }),
             s.last_visit.has_snapshot
               ? h('img', { class: 'snap', src: '/api/snapshot/' + s.last_visit.session_id, alt: 'snapshot',
                           loading: 'lazy' })
@@ -247,9 +247,7 @@ function histItem(sum) {
   const who = whoLabel(sum);
   return h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
     h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
-    h('div', { class: 'name' },
-      who,
-      h('span', { class: 'tag', text: ' · ' + sum.trigger })),
+    h('div', { class: 'name' }, who),
     h('div', { class: 'meta' },
       (sum.duration_s != null ? fmtDur(sum.duration_s) + ' · ' : '') + sum.message_count + ' msg',
       sum.frigate_event_id
@@ -309,11 +307,9 @@ async function renderSession(id) {
         h('button', { class: 'back', onclick: goBack }, '←'),
         h('h2', { text: whoLabel(s) }),
         h('span', { class: 'meta', text:
-          when + ' · ' + s.trigger +
+          when +
           (s.status ? ' · ' + s.status : '') +
-          (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') +
-          (s.doorbell ? ' · doorbell' : '') +
-          (s.label ? ' · ' + s.label : '') })),
+          (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') })),
       h('div', { class: 'body' },
         h('div', { class: 'media-pane' },
           h('div', { class: 'clip-pane' },
