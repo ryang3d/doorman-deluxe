@@ -33,7 +33,7 @@ FIELDS = [
     ('DOORMAN_MIC_SOURCE', 'Visitor mic source', 'Camera & mic', 'select', False, False,
      ['relay', 'http', 'webtrack'], 'relay',
      'relay=go2rtc RTSP relay; http=AD410 getAudio (zero-RTSP); webtrack=WebRTC track'),
-    ('DOORMAN_MIC_RTSP', 'Mic RTSP relay', 'Camera & mic', 'secret', False, True,
+    ('DOORMAN_MIC_RTSP', 'Mic RTSP relay', 'Camera & mic', 'text', False, False,
      None, '', 'go2rtc relay URL for the visitor mic'),
     ('DOORMAN_DOORBELL_HOST', 'Doorbell host', 'Camera & mic', 'text', False, False,
      None, '', 'AD410 HTTP host (MIC_SOURCE=http)'),
@@ -152,7 +152,7 @@ FIELDS = [
     ('DOORMAN_SNAPSHOT_RETENTION', 'Snapshot retention', 'Snapshots', 'number', False, False,
      None, 25, '0=keep all'),
     # --- Legacy mic (fallback) ---
-    ('CAM_MIC_RTSP', 'Camera mic RTSP (legacy)', 'Camera & mic', 'secret', False, True,
+    ('CAM_MIC_RTSP', 'Camera mic RTSP (legacy)', 'Camera & mic', 'text', False, False,
      None, '', 'Direct-camera RTSP; fallback when DOORMAN_MIC_RTSP is unset'),
     # --- Web UI ---
     ('DOORMAN_UI_PORT', 'UI port', 'Web UI', 'number', True, False,
