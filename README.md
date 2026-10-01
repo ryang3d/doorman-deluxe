@@ -1,3 +1,5 @@
+<div align="center"><img src="docs/logo.png" width="560" alt="Doorman Deluxe logo: a superhero whose head is a video doorbell, standing in front of a door, with the DoormanDX wordmark below"></div>
+
 # Doorman Deluxe
 
 > **Public version:** see `ryang3d/doorman-deluxe` (public). This private repo is the
