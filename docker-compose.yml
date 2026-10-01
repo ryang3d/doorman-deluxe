@@ -17,6 +17,11 @@ services:
     environment:
       # must match the mounted volume path
       DOORMAN_SNAPSHOT_DIR: /snapshots
+      # Household timezone (Los Angeles). Drives date/logging/strftime inside the
+      # container so timestamps read local. The web UI additionally renders every
+      # timestamp in this zone explicitly (src/ui/app.js HOUSE_TZ), so the history
+      # view shows unambiguous "when it happened" times regardless of the viewer.
+      TZ: America/Los_Angeles
 
   # Standalone Parakeet TDT 0.6B v3 STT (Task 2). POST /transcribe on 10301.
   # network_mode: host so the doorman container reaches it at 127.0.0.1:10301.

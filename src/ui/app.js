@@ -43,19 +43,57 @@ const apiPost = (p, body) => api(p, {
 
 function escText(s) { return s == null ? '' : String(s); }
 
-function fmtWhen(iso) {
-  if (!iso) return '—';
+// Household timezone. Every timestamp in the UI is rendered in this zone, so
+// history reads the same regardless of which device/LAN it's opened from.
+// Keep in sync with TZ in docker-compose.yml / the Dockerfile.
+const HOUSE_TZ = 'America/Los_Angeles';
+
+function _laDate(iso) {
   const d = new Date(iso);
-  if (isNaN(d.getTime())) return String(iso);
-  const now = Date.now();
-  const diff = now - d.getTime();
-  if (diff < 60e3) return 'just now';
-  if (diff < 3600e3) return Math.floor(diff / 60e3) + 'm ago';
-  const sameDay = d.toDateString() === new Date().toDateString();
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  if (sameDay) return time;
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+  return isNaN(d.getTime()) ? null : d;
 }
+function _laTodayKey() {
+  return new Intl.DateTimeFormat('en-US', { timeZone: HOUSE_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+function _laDayKey(d) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: HOUSE_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+function _laTime(d) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: HOUSE_TZ, hour: 'numeric', minute: '2-digit', hour12: true }).format(d);
+}
+function _laDayShort(d) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: HOUSE_TZ, month: 'short', day: 'numeric' }).format(d);
+}
+
+// Absolute timestamp in the household zone. opts.alwaysDate forces the date
+// (used for history review); otherwise same-day-in-HOUSE_TZ shows time only.
+function fmtWhen(iso, opts) {
+  const d = _laDate(iso);
+  if (!d) return '—';
+  const sameDay = _laDayKey(d) === _laTodayKey();
+  if (opts && opts.alwaysDate) return _laDayShort(d) + ', ' + _laTime(d);
+  if (sameDay) return _laTime(d);
+  return _laDayShort(d) + ', ' + _laTime(d);
+}
+
+// Time-only in the household zone (for the live transcript's per-line labels).
+function fmtTime(iso) {
+  const d = _laDate(iso);
+  return d ? _laTime(d) : '';
+}
+
+// Full absolute timestamp in the household zone (history/session detail):
+// "Wed, Sep 30, 2026, 9:49 PM".
+function fmtFull(iso) {
+  const d = _laDate(iso);
+  if (!d) return '—';
+  const s = new Intl.DateTimeFormat('en-US', {
+    timeZone: HOUSE_TZ, weekday: 'short', month: 'short', day: 'numeric',
+    year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+  }).format(d);
+  return s;
+}
+
 
 function fmtDur(s) {
   if (s == null) return '';
@@ -103,7 +141,7 @@ function goBack() {
 function msgNode(m) {
   const role = m.role || 'system';
   const who = { visitor: 'Visitor', doorman: 'Doorman', tool: 'Tool', system: 'System' }[role] || role;
-  const label = who + (m.kind ? ' · ' + m.kind : '') + ' · ' + (m.ts ? new Date(m.ts).toLocaleTimeString() : '');
+  const label = who + (m.kind ? ' · ' + m.kind : '') + ' · ' + fmtTime(m.ts);
   return h('div', { class: 'msg ' + role },
     h('div', { class: 'who', text: label }),
     h('div', { class: 'bubble', text: escText(m.text) }),
@@ -164,7 +202,7 @@ async function renderDashboard() {
     h('div', { class: 'hist-list' },
       s.last_visit
         ? h('a', { href: '#session/' + s.last_visit.session_id, class: 'hist-item' },
-            h('div', { class: 'when', text: fmtWhen(s.last_visit.started_at) }),
+            h('div', { class: 'when', text: fmtWhen(s.last_visit.started_at, { alwaysDate: true }) }),
             h('div', { class: 'name' },
               s.last_visit.recognized_name || h('span', { class: 'tag', text: 'Unknown' }),
               ' ', h('span', { class: 'tag', text: '· ' + s.last_visit.trigger })),
@@ -193,7 +231,7 @@ let histState = { offset: 0, limit: 30 };
 function histItem(sum) {
   const who = sum.recognized_name || 'Unknown';
   return h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
-    h('div', { class: 'when', text: fmtWhen(sum.started_at) }),
+    h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
     h('div', { class: 'name' },
       who,
       h('span', { class: 'tag', text: ' · ' + sum.trigger })),
@@ -246,7 +284,7 @@ async function renderSession(id) {
       h('div', { class: 'muted-line', text: 'Session not found: ' + e.message }));
     return;
   }
-  const when = s.started_at ? new Date(s.started_at).toLocaleString() : '';
+  const when = s.started_at ? fmtFull(s.started_at) : '';
   view.replaceChildren(
     h('div', { class: 'detail' },
       h('div', { class: 'head' },

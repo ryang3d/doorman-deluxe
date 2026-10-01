@@ -23,5 +23,9 @@ ENV DOORMAN_SNAPSHOT_DIR=/snapshots
 # UI + transcripts data dir (DOORMAN_DATA_DIR); session snapshots + sessions.jsonl
 RUN mkdir -p /data/transcripts /data/snapshots
 
+# Household timezone (Los Angeles) for date/logging/strftime; mirrors TZ in
+# docker-compose.yml. The web UI renders timestamps in this zone explicitly too.
+ENV TZ=America/Los_Angeles
+
 # run the service (no args = subscribe to Frigate MQTT + serve door events forever)
 ENTRYPOINT ["python", "src/doorman.py"]
