@@ -34,6 +34,7 @@ DEFAULTS = {
     'GO2RTC_URL': 'http://<frigate-host>:1984',
     'FRIGATE_TOPIC': 'frigate/events',
     'FRONT_CAMERA': 'front_doorbell',
+    'DOORMAN_CLIP_FALLBACK_WINDOW_S': 300,
     # doorbell camera mic RTSP (visitor audio in)
     'CAM_MIC_RTSP': ('rtsp://admin:<doorbell-pass>@<camera-ip>:554/'
                      'cam/realmonitor?channel=1&subtype=1'),

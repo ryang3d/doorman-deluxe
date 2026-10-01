@@ -34,3 +34,9 @@ def test_load_session_roundtrips_event_id(tmp_path):
     sid = s['session_id']
     tr.end_session()
     assert tr.load_session(sid)['frigate_event_id'] == '2.2-b'
+
+def test_clip_fallback_window_default(monkeypatch, tmp_path):
+    _use_tmp_dir(str(tmp_path))
+    monkeypatch.delenv('DOORMAN_CLIP_FALLBACK_WINDOW_S', raising=False)
+    cfg = dc.load()
+    assert cfg['DOORMAN_CLIP_FALLBACK_WINDOW_S'] == 300
