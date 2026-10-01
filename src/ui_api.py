@@ -22,6 +22,8 @@ import doorman_config as _dc
 import doorman_tools as _tools
 import ui_schema as _schema
 import transcripts as _tr
+import prompts_store as _ps
+import doorman_prompt as _dp
 
 log = logging.getLogger('doorman.ui')
 
@@ -231,6 +233,78 @@ async def api_notify_test(request):
         return web.json_response({'ok': False, 'detail': str(e)}, status=500)
 
 
+# --------------------------------------------------------------- prompts
+def _prompt_placeholders(key):
+    return {
+        'system': ['{household_hint}', '{identity}'],
+        'animal': ['{animal_label}', '{greeting}'],
+        'trigger': ['{facts}'],
+        'local_notes': [],
+        'animal_cat_lines': [],
+        'animal_dog_lines': [],
+        'animal_generic_line': [],
+    }[key]
+
+
+def _prompt_payload():
+    cur = _ps.load()
+    defs = _ps.defaults()
+    prompts = {}
+    for k in _ps.KEYS:
+        prompts[k] = {'text': cur[k], 'default': defs[k],
+                      'placeholders': _prompt_placeholders(k)}
+    return {'prompts': prompts, 'order': list(_ps.KEYS)}
+
+
+async def api_prompts_get(request):
+    return web.json_response(_prompt_payload())
+
+
+async def api_prompts_post(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({'error': 'bad json'}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({'error': 'bad json'}, status=400)
+    values = body.get('values') or {}
+    if not isinstance(values, dict):
+        return web.json_response({'error': 'values must be an object'}, status=400)
+    updates = {k: v for k, v in values.items()}
+    saved = _ps.save(updates)
+    return web.json_response({'saved': saved})
+
+
+async def api_prompts_reset(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    key = body.get('key')
+    key = key.strip() if isinstance(key, str) else ''
+    return web.json_response({'ok': _ps.reset(key)})
+
+
+async def api_prompts_preview(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    tpl = body.get('system')
+    if not isinstance(tpl, str) or not tpl:
+        tpl = _ps.get('system')
+    return web.json_response({
+        'system': {
+            'recognized': _dp.preview_system(tpl, 'Ryan'),
+            'unknown': _dp.preview_system(tpl, None),
+        }
+    })
+
+
 # --------------------------------------------------------------- app
 def build_app():
     app = web.Application()
@@ -244,6 +318,10 @@ def build_app():
     app.router.add_get('/api/restart', api_restart_method_not_allowed)
     app.router.add_post('/api/restart', api_restart)
     app.router.add_post('/api/notify-test', api_notify_test)
+    app.router.add_get('/api/prompts', api_prompts_get)
+    app.router.add_post('/api/prompts', api_prompts_post)
+    app.router.add_post('/api/prompts/reset', api_prompts_reset)
+    app.router.add_post('/api/prompts/preview', api_prompts_preview)
     ui_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ui')
 
     async def _index(request):

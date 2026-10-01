@@ -155,3 +155,76 @@ async def test_notify_test_endpoint_reports_failure(client, monkeypatch):
         d = await r.json()
         assert d['ok'] is False
         assert '500' in d['detail']
+
+
+@pytest.mark.asyncio
+async def test_prompts_get_returns_seven_and_defaults(client):
+    async with await client as c:
+        r = await c.get('/api/prompts')
+        assert r.status == 200
+        d = await r.json()
+        assert set(d['prompts'].keys()) == {'system', 'animal', 'animal_cat_lines',
+                                            'animal_dog_lines', 'animal_generic_line',
+                                            'trigger', 'local_notes'}
+        assert 'system' in d['order']
+        # each entry exposes text + default + placeholders
+        e = d['prompts']['system']
+        for k in ('text', 'default', 'placeholders'):
+            assert k in e
+        assert e['text'] == e['default']   # nothing overridden yet
+
+
+@pytest.mark.asyncio
+async def test_prompts_post_saves_and_get_reflects(client):
+    async with await client as c:
+        r = await c.post('/api/prompts', json={'values': {'system': 'DRAFT {identity}'}})
+        assert r.status == 200
+        assert (await r.json())['saved'] == ['system']
+        r2 = await c.get('/api/prompts')
+        assert (await r2.json())['prompts']['system']['text'] == 'DRAFT {identity}'
+
+
+@pytest.mark.asyncio
+async def test_prompts_reset(client):
+    async with await client as c:
+        await c.post('/api/prompts', json={'values': {'trigger': 'X {facts}'}})
+        r = await c.post('/api/prompts/reset', json={'key': 'trigger'})
+        assert r.status == 200 and (await r.json())['ok'] is True
+        r2 = await c.get('/api/prompts')
+        assert (await r2.json())['prompts']['trigger']['text'] == (await r2.json())['prompts']['trigger']['default']
+
+
+@pytest.mark.asyncio
+async def test_prompts_preview_renders_recognized_and_unknown(client):
+    async with await client as c:
+        r = await c.post('/api/prompts/preview',
+                         json={'system': 'Hi {identity} for {household_hint}'})
+        assert r.status == 200
+        d = await r.json()
+        assert 'Ryan' in d['system']['recognized']
+        assert 'NOT recognized' in d['system']['unknown']
+
+
+@pytest.mark.asyncio
+async def test_prompts_malformed_bodies_dont_500(client):
+    async with await client as c:
+        # valid JSON but not an object
+        r = await c.post('/api/prompts', json=[1, 2, 3])
+        assert r.status == 400
+        # values is a list, not an object
+        r = await c.post('/api/prompts', json={'values': ['x']})
+        assert r.status == 400
+        # reset with a non-object body and a non-string key
+        r = await c.post('/api/prompts/reset', json='str')
+        assert r.status == 200 and (await r.json())['ok'] is False
+        r = await c.post('/api/prompts/reset', json={'key': 5})
+        assert r.status == 200 and (await r.json())['ok'] is False
+        # preview with a non-string draft falls back to the saved prompt
+        r = await c.post('/api/prompts/preview', json={'system': 42})
+        assert r.status == 200
+        d = await r.json()
+        assert 'recognized' in d['system']
+        # bad json to the write endpoint is a 400, not a 500
+        r = await c.post('/api/prompts', data='{not json',
+                         headers={'Content-Type': 'application/json'})
+        assert r.status == 400

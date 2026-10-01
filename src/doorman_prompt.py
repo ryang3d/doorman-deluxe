@@ -117,6 +117,13 @@ def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False,
     return _substitute(prompts_store.get('trigger'), facts=" ".join(facts)).strip()
 
 
+def preview_system(template, recognized_name=None):
+    """Render the main system prompt from an (optional) draft template so the UI
+    can show the effect of an edit before it is saved."""
+    identity = _identity_block(recognized_name)
+    return _substitute(template, household_hint="the residents", identity=identity)
+
+
 # ----------------------------------------------------------------------------- tests
 if __name__ == "__main__":
     print(build_doorman_prompt(recognized_name="Ryan"))
