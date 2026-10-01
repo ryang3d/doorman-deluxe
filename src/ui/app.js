@@ -385,7 +385,7 @@ function buildSettings() {
 }
 
 function settingRow(spec) {
-  const wrap = h('div', {});
+  const wrap = h('div', { class: 'row' });
   let input;
   if (spec.type === 'boolean') {
     input = h('input', { type: 'checkbox' });
