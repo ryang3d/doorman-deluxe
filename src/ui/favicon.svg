@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- doorbell-camera body: dark rounded panel -->
+  <rect x="6" y="10" width="52" height="44" rx="12" fill="#1f2937"/>
+  <rect x="6" y="10" width="52" height="44" rx="12" fill="none" stroke="#374151" stroke-width="2"/>
+  <!-- camera lens ring -->
+  <circle cx="24" cy="32" r="12" fill="#111827" stroke="#4b5563" stroke-width="2"/>
+  <circle cx="24" cy="32" r="6" fill="#0ea5e9"/>
+  <circle cx="21" cy="29" r="2" fill="#e0f2fe"/>
+  <!-- doorbell button -->
+  <circle cx="46" cy="32" r="7" fill="#f59e0b"/>
+  <circle cx="46" cy="32" r="3" fill="#fff7ed"/>
+</svg>
