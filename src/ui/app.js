@@ -300,26 +300,28 @@ async function renderSession(id) {
           (s.doorbell ? ' · doorbell' : '') +
           (s.label ? ' · ' + s.label : '') })),
       h('div', { class: 'body' },
+        h('div', { class: 'media-pane' },
+          h('div', { class: 'clip-pane' },
+            h('label', { class: 'clip-label', text: 'Frigate clip' }),
+            h('video', { controls: true, preload: 'metadata',
+                         poster: s.snapshot ? '/api/snapshot/' + s.session_id : '',
+                         src: '/api/clip/' + encodeURIComponent(s.session_id),
+                         onerror() {
+                           this.replaceWith(h('div', { class: 'no-snap', text: 'Clip unavailable' }));
+                         } }),
+            h('a', { class: 'clip-dl', href: '/api/clip/' + encodeURIComponent(s.session_id),
+                     target: '_blank', text: 'Open in new tab' })
+          ),
+          h('div', { class: 'snap-pane' },
+            s.snapshot
+              ? h('img', { src: '/api/snapshot/' + s.session_id, alt: 'Snapshot',
+                          onerror() { this.replaceWith(h('div', { class: 'no-snap', text: 'Snapshot unavailable' })); } })
+              : h('div', { class: 'no-snap', text: 'No snapshot' })
+          )
+        ),
         (s.messages && s.messages.length)
           ? h('div', { class: 'transcript' }, s.messages.map(msgNode))
-          : h('div', { class: 'transcript' }, h('div', { class: 'muted-line', text: 'No transcript.' })),
-        h('div', { class: 'clip-pane' },
-          h('label', { class: 'clip-label', text: 'Frigate clip' }),
-          h('video', { controls: true, preload: 'metadata',
-                       poster: s.snapshot ? '/api/snapshot/' + s.session_id : '',
-                       src: '/api/clip/' + encodeURIComponent(s.session_id),
-                       onerror() {
-                         this.replaceWith(h('div', { class: 'no-snap', text: 'Clip unavailable' }));
-                       } }),
-          h('a', { class: 'clip-dl', href: '/api/clip/' + encodeURIComponent(s.session_id),
-                   target: '_blank', text: 'Open in new tab' })
-        ),
-        h('div', { class: 'snap-pane' },
-          s.snapshot
-            ? h('img', { src: '/api/snapshot/' + s.session_id, alt: 'Snapshot',
-                        onerror() { this.replaceWith(h('div', { class: 'no-snap', text: 'Snapshot unavailable' })); } })
-            : h('div', { class: 'no-snap', text: 'No snapshot' })
-        )
+          : h('div', { class: 'transcript' }, h('div', { class: 'muted-line', text: 'No transcript.' }))
       )
     ),
   );
