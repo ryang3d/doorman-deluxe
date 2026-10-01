@@ -56,3 +56,19 @@ def test_trigger_text_no_facts_no_leading_space(tmp_path):
     got = dp.interaction_trigger_text()   # no doorbell, no name, label default 'person'
     assert got.startswith('A person was detected at the door.')
     assert 'Greet them briefly' in got
+
+def test_local_system_prompt_appends_stored_notes(tmp_path):
+    _use(str(tmp_path))
+    import voice_local as vl
+    base = "BASE PROMPT"
+    out = vl.local_system_prompt(base)
+    # pin the exact contract: base + '\n\n' + current notes
+    assert out == base + "\n\n" + ps.get('local_notes')
+    # override the notes and see it reflected
+    ps.save({'local_notes': 'MY NOTE {x}'})
+    out2 = vl.local_system_prompt("B")
+    assert out2.endswith('MY NOTE {x}')
+    # reset falls back to the built-in default
+    ps.reset('local_notes')
+    out3 = vl.local_system_prompt("B")
+    assert out3 == "B" + "\n\n" + ps.defaults()['local_notes']

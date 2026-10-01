@@ -14,6 +14,7 @@ import numpy as np
 
 import doorman_config as _dc
 import transcripts as _tr
+import prompts_store
 
 log = logging.getLogger("doorman.local")
 
@@ -257,12 +258,7 @@ def openai_tools_schema():
 
 
 def local_system_prompt(base_prompt: str) -> str:
-    return base_prompt + (
-        "\n\nLOCAL-PIPELINE NOTES: You are now spoken by a local text-to-speech engine, so "
-        "keep replies short: one or two sentences, no lists, no markdown. Reply in the "
-        "same language the visitor uses (English or Spanish). Tool calls add a short "
-        "pause, so only call them when they genuinely help; when you do, call it once, "
-        "then say one short line.")
+    return base_prompt + "\n\n" + prompts_store.get('local_notes')
 
 
 # ---------------------------------------------------------------- HTTP clients
