@@ -194,8 +194,8 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   cursor: pointer;
 }
 .back:hover { border-color: var(--accent-dim); }
-.detail .body { display: grid; grid-template-columns: 1fr 260px; gap: 0; }
-.detail .transcript { grid-row: span 2; max-height: none; min-height: 200px; }
+.detail .body { display: grid; grid-template-columns: minmax(0, 1fr) 340px 260px; gap: 0; }
+.detail .transcript { max-height: none; min-height: 200px; }
 .snap-pane { border-left: 1px solid var(--border); padding: 14px; }
 .snap-pane img { width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block; }
 .snap-pane .no-snap { color: var(--muted); font-size: 13px; }
@@ -349,14 +349,17 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 .prompt-preview { background: var(--panel-2, #111); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; margin: 8px 0 0; }
 .prompt-head .tag { display: inline-block; font-size: 11px; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: 1px; }
 
-/* Frigate clip player (session detail) */
-.detail .body { grid-template-columns: 1fr 300px; }
-.clip-pane { border-left: 1px solid var(--border); padding: 14px; grid-row: span 2; }
+/* Frigate clip player (session detail): 3-column grid (transcript | clip | snapshot) */
+.clip-pane { border-left: 1px solid var(--border); padding: 14px; }
 .clip-pane video { width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block; background: #000; }
 .clip-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .clip-dl { display: inline-block; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .clip-tag { opacity: .85; }
-.snap-pane { border-left: none; }
+@media (max-width: 900px) {
+  .detail .body { grid-template-columns: minmax(0, 1fr) 300px; }
+  .snap-pane { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--border); }
+}
 @media (max-width: 720px) {
+  .detail .body { grid-template-columns: 1fr; }
   .clip-pane { border-left: none; border-top: 1px solid var(--border); }
 }
