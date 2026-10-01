@@ -43,6 +43,18 @@ const apiPost = (p, body) => api(p, {
 
 function escText(s) { return s == null ? '' : String(s); }
 
+// Display name for a session: recognized name when present, otherwise a
+// trigger-aware label ("Doorbell press" for doorbell rings, the animal kind
+// for cat/dog sessions, "Detected" for unrecognized person detection).
+// Replaces the old blanket "Unknown".
+function whoLabel(sum) {
+  if (sum.recognized_name) return sum.recognized_name;
+  if (sum.label === 'cat' || sum.label === 'dog') return sum.label;
+  if (sum.trigger === 'doorbell') return 'Doorbell press';
+  if (sum.trigger === 'person' || sum.trigger === 'animal') return 'Detected';
+  return 'Unknown';
+}
+
 // Household timezone. Every timestamp in the UI is rendered in this zone, so
 // history reads the same regardless of which device/LAN it's opened from.
 // Keep in sync with TZ in docker-compose.yml / the Dockerfile.
@@ -150,7 +162,7 @@ function msgNode(m) {
 
 function summaryLine(sum) {
   if (!sum) return 'No visits yet';
-  const who = sum.recognized_name || 'Unknown';
+  const who = whoLabel(sum);
   return who + ' · ' + sum.trigger + ' · ' + fmtWhen(sum.started_at) +
     (sum.duration_s != null ? ' · ' + fmtDur(sum.duration_s) : '') +
     ' · ' + sum.message_count + ' msg';
@@ -204,7 +216,9 @@ async function renderDashboard() {
         ? h('a', { href: '#session/' + s.last_visit.session_id, class: 'hist-item' },
             h('div', { class: 'when', text: fmtWhen(s.last_visit.started_at, { alwaysDate: true }) }),
             h('div', { class: 'name' },
-              s.last_visit.recognized_name || h('span', { class: 'tag', text: 'Unknown' }),
+              s.last_visit.recognized_name
+                ? s.last_visit.recognized_name
+                : h('span', { class: 'tag', text: whoLabel(s.last_visit) }),
               ' ', h('span', { class: 'tag', text: '· ' + s.last_visit.trigger })),
             h('div', { class: 'meta', text: summaryLine(s.last_visit).split(' · ').slice(1).join(' · ') }),
             s.last_visit.has_snapshot
@@ -229,7 +243,7 @@ async function renderDashboard() {
 let histState = { offset: 0, limit: 30 };
 
 function histItem(sum) {
-  const who = sum.recognized_name || 'Unknown';
+  const who = whoLabel(sum);
   return h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
     h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
     h('div', { class: 'name' },
@@ -292,7 +306,7 @@ async function renderSession(id) {
     h('div', { class: 'detail' },
       h('div', { class: 'head' },
         h('button', { class: 'back', onclick: goBack }, '←'),
-        h('h2', { text: s.recognized_name || 'Unknown' }),
+        h('h2', { text: whoLabel(s) }),
         h('span', { class: 'meta', text:
           when + ' · ' + s.trigger +
           (s.status ? ' · ' + s.status : '') +
@@ -307,7 +321,10 @@ async function renderSession(id) {
                          poster: s.snapshot ? '/api/snapshot/' + s.session_id : '',
                          src: '/api/clip/' + encodeURIComponent(s.session_id),
                          onerror() {
+                           const pane = this.parentElement;
                            this.replaceWith(h('div', { class: 'no-snap', text: 'Clip unavailable' }));
+                           const link = pane && pane.querySelector('.clip-dl');
+                           if (link) link.remove();
                          } }),
             h('a', { class: 'clip-dl', href: '/api/clip/' + encodeURIComponent(s.session_id),
                      target: '_blank', text: 'Open in new tab' })

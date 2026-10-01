@@ -109,6 +109,7 @@ def load_history(limit=50, offset=0):
                     'session_id': o.get('session_id'),
                     'started_at': o.get('started_at'),
                     'trigger': o.get('trigger'),
+                    'label': o.get('label'),
                     'recognized_name': o.get('recognized_name'),
                     'engine': o.get('engine'),
                     'duration_s': o.get('duration_s'),
