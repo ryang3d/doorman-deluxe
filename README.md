@@ -195,6 +195,16 @@ is treated as dead; default 8).
 
 An in-container web UI (aiohttp, no build step, offline) ships with the service: status dashboard, visit history with per-visit snapshot + recognized name, timestamped conversation transcripts, and a settings form covering every `DOORMAN_*` key.
 
+| Dashboard | History | Session detail |
+|-----------|---------|----------------|
+| ![](docs/screenshots/dashboard.png) | ![](docs/screenshots/history.png) | ![](docs/screenshots/session.png) |
+
+| Settings | Prompts |
+|----------|---------|
+| ![](docs/screenshots/settings.png) | ![](docs/screenshots/prompts.png) |
+
+*(Screenshots show camera snapshots blurred.)*
+
 - **Reach it** at `http://<doorman-host>:8090` (the service uses `network_mode: host`, so the bind port is directly reachable). No auth - trusted LAN only. Disable with `DOORMAN_UI_ENABLED=false` (voice service only) or move it with `DOORMAN_UI_PORT`.
 - **Tabs:** Dashboard (camera health, engine, trigger, last visit, live "in a conversation" indicator + live transcript), History (visits with snapshot thumbnails, click through to the transcript), Settings (all keys, grouped, with hot/restart badges).
 - **Settings model.** Saving writes `.env`. Keys are either *hot* (re-read at the point of use, so the change takes effect on the next interaction without a restart) or *restart-required* (frozen into the process at start). The form flags each, and when a restart is needed it offers **Restart to apply**, which re-execs the process in place (same container - no recreate). `.env` is the source of truth both ways: a key present in the file wins, and a key removed from the file is dropped on the next start.
