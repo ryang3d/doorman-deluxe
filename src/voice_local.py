@@ -415,6 +415,42 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
 # The very first ping is deferred DOORMAN_KEEP_WARM_SETTLE_S so we don't warm
 # during process start-up; after that it repeats every
 # DOORMAN_KEEP_WARM_INTERVAL_S. No-op for the gemini engine (no local STT/TTS).
+# voicebox model-name for each engine (the /models/status `model_name` values).
+_VOICEBOX_MODEL_NAMES = {
+    'chatterbox_turbo': 'chatterbox-turbo',
+    'chatterbox': 'chatterbox-tts',
+}
+
+
+async def _voicebox_model_loaded(engine, cfg):
+    """True if voicebox already has `engine`'s model in VRAM, None if unknown.
+
+    voicebox keeps a model resident once it is loaded (nothing unloads it on
+    idle — only container shutdown or the manual /models/unload endpoints), so
+    the keep-warm 'Hello.' generation only matters when the model is actually
+    cold, i.e. right after a voicebox container restart. Probing instead of
+    generating every cycle stops the warmup from committing a persisted
+    'Hello.' generation 2-3x/hour. Unknown/None -> caller should generate
+    (the safe side)."""
+    import aiohttp
+    base = cfg['DOORMAN_TTS_BASE_URL'].rstrip('/')
+    want = _VOICEBOX_MODEL_NAMES.get(engine, engine.replace('_', '-'))
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(base + '/models/status',
+                             timeout=aiohttp.ClientTimeout(total=5)) as r:
+                if r.status != 200:
+                    return None
+                data = await r.json()
+        models = data.get('models') or []
+        for m in models:
+            if m.get('model_name') == want:
+                return bool(m.get('loaded'))
+        return None
+    except Exception:
+        return None
+
+
 async def keep_warm_loop(cfg):
     settle_s = float(cfg.get('DOORMAN_KEEP_WARM_SETTLE_S', 30))
     interval_s = float(cfg.get('DOORMAN_KEEP_WARM_INTERVAL_S', 1500))
@@ -442,12 +478,19 @@ async def keep_warm_loop(cfg):
         # TTS warm: generate a 1-word clip through the real voicebox path. This
         # loads the qwen-tts model (the expensive part) and warms generation. We
         # only need the model hot, so we don't fetch the audio bytes back.
+        # voicebox keeps the model resident once loaded, so we first probe
+        # /models/status: only generate when the engine's model is actually
+        # cold (right after a voicebox container restart). This stops the
+        # warmup from committing a persisted 'Hello.' generation every cycle.
         t1 = time.monotonic()
+        profile, engine = tts_profile_for_language('', cfg)
         try:
-            profile, engine = tts_profile_for_language('', cfg)
-            await _voicebox_generate("Hello.", profile, engine, cfg)
-            log.info("keep-warm TTS ok in %d ms (engine=%s)",
-                     int((time.monotonic() - t1) * 1000), engine)
+            if await _voicebox_model_loaded(engine, cfg) is True:
+                log.info("keep-warm TTS skip (model already loaded, engine=%s)", engine)
+            else:
+                await _voicebox_generate("Hello.", profile, engine, cfg)
+                log.info("keep-warm TTS ok in %d ms (engine=%s)",
+                         int((time.monotonic() - t1) * 1000), engine)
         except asyncio.CancelledError:
             return
         except Exception as e:
