@@ -23,7 +23,10 @@ services:
       # view shows unambiguous "when it happened" times regardless of the viewer.
       TZ: America/Los_Angeles
 
-  # Standalone Parakeet TDT 0.6B v3 STT (Task 2). POST /transcribe on 10301.
+  # Standalone Parakeet TDT 0.6B v3 STT. POST /transcribe on 10301.
+  # ON-DEMAND: doorman runs whisper (:10302), so this stays stopped for GPU
+  # headroom. To A/B against whisper: docker compose up -d parakeet, then flip
+  # DOORMAN_STT_BASE_URL=http://127.0.0.1:10301 and recreate doorman.
   # network_mode: host so the doorman container reaches it at 127.0.0.1:10301.
   parakeet:
     image: doorman-parakeet:local
