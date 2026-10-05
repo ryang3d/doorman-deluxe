@@ -494,7 +494,9 @@ async def keep_warm_loop(cfg):
         except asyncio.CancelledError:
             return
         except Exception as e:
-            log.warning("keep-warm TTS failed: %s", str(e)[:120])
+            log.warning("keep-warm TTS failed: %s: %s",
+                        type(e).__name__, str(e)[:120] or '(no message)',
+                        exc_info=True)
         log.info("keep-warm cycle done; next in %.0fs", interval_s)
         try:
             await asyncio.sleep(interval_s)
