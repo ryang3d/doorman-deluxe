@@ -244,7 +244,7 @@ let histState = { offset: 0, limit: 30 };
 
 function histItem(sum) {
   const who = whoLabel(sum);
-  return h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
+  const row = h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
     h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
     h('div', { class: 'name' }, who),
     h('div', { class: 'meta', text:
@@ -254,7 +254,19 @@ function histItem(sum) {
                   loading: 'lazy',
                   onerror() { this.replaceWith(h('span', { class: 'snap', style: 'display:block' })); } })
       : null,
+    h('button', { class: 'del-btn', title: 'Delete this visit', text: '✕',
+      onclick(ev) {
+        ev.preventDefault();   // don't follow the row link
+        ev.stopPropagation();
+        if (!confirm('Delete this visit?\n' + who + ' · ' +
+                     fmtWhen(sum.started_at, { alwaysDate: true }) +
+                     '\nTranscript and snapshot are removed. This cannot be undone.')) return;
+        api('/api/sessions/' + encodeURIComponent(sum.session_id), { method: 'DELETE' })
+          .then(() => { toast('Visit deleted.', 'ok'); renderHistory(); })
+          .catch(e => toast('Delete failed: ' + e.message, 'err'));
+      } }),
   );
+  return row;
 }
 
 async function loadHistory(reset) {

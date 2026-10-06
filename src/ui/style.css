@@ -172,6 +172,14 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 }
 .load-more:hover { border-color: var(--accent-dim); }
 
+.del-btn {
+  background: none; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; padding: 2px 10px; font-size: 13px; line-height: 1.4;
+  cursor: pointer;
+}
+.del-btn:hover { border-color: var(--err); color: var(--err); }
+.hist-item .del-btn { padding: 2px 8px; }
+
 /* ---------- session detail ---------- */
 .detail { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .detail .head {
