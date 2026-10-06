@@ -137,6 +137,69 @@ def load_session(session_id):
                 return o
     return None
 
+def _remove_snapshot(path):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+def _write_jsonl(rows):
+    """Atomic rewrite of sessions.jsonl (temp file + rename). Safe in-process:
+    the UI and listeners share this process/event loop."""
+    p = _jsonl_path()
+    tmp = p + '.tmp'
+    with open(tmp, 'w') as f:
+        for r in rows:
+            f.write(r + '\n')
+    os.replace(tmp, p)
+
+def _read_lines():
+    p = _jsonl_path()
+    rows = []
+    if os.path.exists(p):
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(line)
+    return rows
+
+def delete_session(session_id):
+    """Remove one persisted session (JSONL row + its snapshot file).
+    Returns True if a session with that id was removed, False if not found.
+    Malformed lines are preserved so a bad line never hides data."""
+    kept, found = [], False
+    for line in _read_lines():
+        try:
+            o = json.loads(line)
+        except Exception:
+            kept.append(line)
+            continue
+        if o.get('session_id') == session_id:
+            found = True
+            _remove_snapshot(o.get('snapshot'))
+        else:
+            kept.append(line)
+    if not found:
+        return False
+    _write_jsonl(kept)
+    return True
+
+def delete_all_sessions():
+    """Remove every persisted session and its snapshots. Returns count removed."""
+    rows = _read_lines()
+    n = 0
+    for line in rows:
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        n += 1
+        _remove_snapshot(o.get('snapshot'))
+    _write_jsonl([])
+    return n
+
 async def capture_session_snapshot(cfg, session_id):
     """Best-effort thumbnail at session start; never raises, never blocks the
     greeting. Writes to <DOORMAN_DATA_DIR>/snapshots/<id>.jpg."""

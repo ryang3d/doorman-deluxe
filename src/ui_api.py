@@ -9,6 +9,8 @@ Endpoints:
   GET  /api/status          health/summary dashboard payload
   GET  /api/history         session summaries, newest first
   GET  /api/sessions/{id}   full session (transcript + metadata)
+  DELETE /api/sessions/{id} delete one completed session (+ its snapshot)
+  DELETE /api/history       delete all sessions (+ their snapshots)
   GET  /api/live            the in-progress session, if any
   GET  /api/snapshot/{id}   per-session snapshot image
   GET  /api/clip/{id}       Frigate clip matching a session (proxy; 404 if none)
@@ -82,6 +84,37 @@ async def api_session(request):
     if s is None:
         return web.json_response({'error': 'not found'}, status=404)
     return web.json_response(s)
+
+
+async def api_session_delete(request):
+    """DELETE /api/sessions/{id} — remove one completed session + snapshot.
+    409 while that session is live (not yet persisted), 404 if unknown."""
+    sid = request.match_info['id']
+    live = _tr.active_session()
+    if live and live['session_id'] == sid:
+        return web.json_response(
+            {'error': 'session is live; delete it after it ends'}, status=409)
+    if not _tr.delete_session(sid):
+        return web.json_response({'error': 'not found'}, status=404)
+    return web.json_response({'deleted': sid})
+
+
+async def api_history_delete(request):
+    """DELETE /api/history — remove all sessions + snapshots.
+    Optional JSON body {"count": N}: if given and N != current row count,
+    409 so a stale confirm-dialog can't wipe a changed history."""
+    expected = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get('count') is not None:
+            expected = body['count']
+    except Exception:
+        pass
+    count = len(_tr.load_history(limit=10 ** 6, offset=0))
+    if expected is not None and expected != count:
+        return web.json_response({'error': 'count changed; re-confirm',
+                                  'count': count}, status=409)
+    return web.json_response({'deleted': _tr.delete_all_sessions()})
 
 
 async def api_live(request):
@@ -353,6 +386,8 @@ def build_app():
     app.router.add_get('/api/status', api_status)
     app.router.add_get('/api/history', api_history)
     app.router.add_get('/api/sessions/{id}', api_session)
+    app.router.add_delete('/api/sessions/{id}', api_session_delete)
+    app.router.add_delete('/api/history', api_history_delete)
     app.router.add_get('/api/live', api_live)
     app.router.add_get('/api/snapshot/{id}', api_snapshot)
     app.router.add_get('/api/clip/{id}', api_clip)
