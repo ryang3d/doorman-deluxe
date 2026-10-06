@@ -273,8 +273,8 @@ async function loadHistory(reset) {
   if (reset) histState = { offset: 0, limit: 30 };
   try {
     const items = await apiGet('/api/history?limit=' + histState.limit + '&offset=' + histState.offset);
-    if (reset) view.replaceChildren();
     const list = $('.hist-list', view) || view;
+    if (reset) list.replaceChildren();   // clear the list only, keep the title + Clear-all button
     if (!items.length && reset) {
       view.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
       return;
@@ -293,8 +293,39 @@ async function loadHistory(reset) {
 }
 
 function renderHistory() {
-  view.replaceChildren(h('div', { class: 'section-title', text: 'Visit history' }), h('div', { class: 'hist-list' }));
+  view.replaceChildren(
+    h('div', { class: 'section-title' }, 'Visit history',
+      h('button', { class: 'clear-all', onclick: clearAllHistory, text: 'Clear all' })),
+    h('div', { class: 'hist-list' }));
   loadHistory(true);
+}
+
+async function clearAllHistory() {
+  let all;
+  try {
+    all = await apiGet('/api/history?limit=10000&offset=0');
+  } catch (e) {
+    toast('History unavailable: ' + e.message, 'err');
+    return;
+  }
+  if (!all.length) { toast('Nothing to delete.', 'ok'); return; }
+  if (!confirm('Delete ALL ' + all.length + ' visits?\nTranscripts and snapshots are removed. This cannot be undone.')) return;
+  try {
+    const r = await api('/api/history', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: all.length }),
+    });
+    toast('Deleted ' + r.deleted + ' visits.', 'ok');
+    renderHistory();
+  } catch (e) {
+    if (e.message && e.message.indexOf('count changed') !== -1) {
+      toast('History changed since the warning; try again.', 'err');
+      renderHistory();
+    } else {
+      toast('Delete failed: ' + e.message, 'err');
+    }
+  }
 }
 
 // Session media pane: the Frigate clip is the primary media. When the clip
@@ -352,7 +383,22 @@ async function renderSession(id) {
         h('span', { class: 'meta', text:
           when +
           (s.status ? ' · ' + s.status : '') +
-          (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') })),
+          (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') }),
+        h('button', { class: 'del-btn', style: 'margin-left:auto', text: 'Delete',
+          onclick: async () => {
+            if (!confirm('Delete this visit?\nTranscript and snapshot are removed. This cannot be undone.')) return;
+            try {
+              await api('/api/sessions/' + encodeURIComponent(s.session_id), { method: 'DELETE' });
+              toast('Visit deleted.', 'ok');
+              location.hash = sessionParent === 'dashboard' ? '#dashboard' : '#history';
+            } catch (e) {
+              if (e.message && e.message.indexOf('HTTP 409') !== -1)
+                toast('This session is live right now; delete it after it ends.', 'err');
+              else
+                toast('Delete failed: ' + e.message, 'err');
+            }
+          } }),
+      ),
       h('div', { class: 'body' },
         h('div', { class: 'media-pane' }, clipFallbackNode(s)),
         (s.messages && s.messages.length)
