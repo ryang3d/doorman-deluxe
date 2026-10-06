@@ -285,6 +285,41 @@ function renderHistory() {
   loadHistory(true);
 }
 
+// Session media pane: the Frigate clip is the primary media. When the clip
+// 404s (no matching Frigate event with a clip), the snapshot is shown
+// instead. Links keep both media reachable without reloading the page.
+function clipFallbackNode(s) {
+  const clipUrl = '/api/clip/' + encodeURIComponent(s.session_id);
+  const snapUrl = s.snapshot ? '/api/snapshot/' + encodeURIComponent(s.session_id) : null;
+  const snapFallback = snapUrl
+    ? h('img', { class: 'snap-fallback', src: snapUrl, alt: 'Snapshot',
+                 onerror() { this.replaceWith(h('div', { class: 'no-snap', text: 'Snapshot unavailable' })); } })
+    : null;
+  return h('div', { class: 'clip-pane' },
+    h('video', { controls: true, preload: 'metadata',
+                 poster: snapUrl || '',
+                 src: clipUrl,
+                 onerror() {
+                   // Only swap on MEDIA_ERR_SRC_NOT_FOUND (code 4), which is
+                   // what our /api/clip 404 produces. A transient 502 (Frigate
+                   // unreachable) or a decode error maps to a different code,
+                   // so we keep the player and a reload can retry.
+                   const code = this.error ? this.error.code : 0;
+                   if (code !== 4) return;
+                   const pane = this.parentElement;
+                   this.replaceWith(snapFallback || h('div', { class: 'no-snap', text: 'No clip or snapshot' }));
+                   const actions = pane.querySelector('.clip-actions');
+                   if (actions) actions.remove();
+                 } }),
+    h('div', { class: 'clip-actions' },
+      h('a', { class: 'clip-dl', href: clipUrl, target: '_blank', text: 'Open clip in new tab' }),
+      snapUrl
+        ? h('a', { class: 'clip-dl', href: snapUrl, target: '_blank', text: 'Open snapshot' })
+        : h('span', { class: 'clip-dl', text: 'No snapshot' })
+    )
+  );
+}
+
 // ---------------------------------------------------------------- session detail
 async function renderSession(id) {
   view.replaceChildren(h('div', { class: 'muted-line', text: 'Loading…' }));
@@ -307,28 +342,7 @@ async function renderSession(id) {
           (s.status ? ' · ' + s.status : '') +
           (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') })),
       h('div', { class: 'body' },
-        h('div', { class: 'media-pane' },
-          h('div', { class: 'clip-pane' },
-            h('label', { class: 'clip-label', text: 'Frigate clip' }),
-            h('video', { controls: true, preload: 'metadata',
-                         poster: s.snapshot ? '/api/snapshot/' + s.session_id : '',
-                         src: '/api/clip/' + encodeURIComponent(s.session_id),
-                         onerror() {
-                           const pane = this.parentElement;
-                           this.replaceWith(h('div', { class: 'no-snap', text: 'Clip unavailable' }));
-                           const link = pane && pane.querySelector('.clip-dl');
-                           if (link) link.remove();
-                         } }),
-            h('a', { class: 'clip-dl', href: '/api/clip/' + encodeURIComponent(s.session_id),
-                     target: '_blank', text: 'Open in new tab' })
-          ),
-          h('div', { class: 'snap-pane' },
-            s.snapshot
-              ? h('img', { src: '/api/snapshot/' + s.session_id, alt: 'Snapshot',
-                          onerror() { this.replaceWith(h('div', { class: 'no-snap', text: 'Snapshot unavailable' })); } })
-              : h('div', { class: 'no-snap', text: 'No snapshot' })
-          )
-        ),
+        h('div', { class: 'media-pane' }, clipFallbackNode(s)),
         (s.messages && s.messages.length)
           ? h('div', { class: 'transcript' }, s.messages.map(msgNode))
           : h('div', { class: 'transcript' }, h('div', { class: 'muted-line', text: 'No transcript.' }))
