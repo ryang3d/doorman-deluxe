@@ -283,6 +283,8 @@ A living list of features being worked on, roughly ordered by priority and group
 - [x] **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view. **Done** - see the "Web UI" section above.
 - [ ] **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
 - [ ] **Local recording of interactions** - privacy-gated, off by default.
+- [ ] **Export / import** - export a session's conversation transcript and video to a zip file, and re-import the same for backup or migration.
+- [ ] **History management** - delete a single recorded interaction or clear all of them, with a confirmation warning before anything is removed.
 - [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
 
 ## License
