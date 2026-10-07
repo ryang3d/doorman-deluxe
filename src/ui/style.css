@@ -218,6 +218,7 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 /* ---------- settings ---------- */
 .settings-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
@@ -227,7 +228,7 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   padding: 8px 0;
   z-index: 5;
 }
-.settings-bar .hint { color: var(--muted); font-size: 13px; flex: 1; }
+.settings-bar .hint { color: var(--muted); font-size: 13px; flex-basis: 100%; order: -1; }
 .settings-search {
   width: 260px;
   max-width: 40vw;
