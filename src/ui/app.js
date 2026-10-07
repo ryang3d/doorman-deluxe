@@ -1273,7 +1273,11 @@ async function doExportBulk(title, available, ids) {
       } catch (e) {
         toast('Export failed: ' + e.message, 'err');
       } finally {
-        if (btn) { btn.disabled = false; updateExportSelectedBtn(); }
+        if (btn) {
+          btn.disabled = false;
+          if (ids) updateExportSelectedBtn();   // re-sync "Export selected (N)"
+          else btn.textContent = 'Export all';   // restore the all-button label
+        }
       }
     },
   });
