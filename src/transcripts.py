@@ -283,3 +283,66 @@ def export_transcript_text(session):
         text = (m.get('text') or '').strip()
         lines.append(('%s %s' % (t, who)).ljust(24) + text)
     return '\n'.join(lines) + '\n'
+
+def import_sessions(session_dicts, overwrite=False):
+    """Append imported session dicts to the JSONL (atomic rewrite).
+    Returns (imported_ids, conflicts). Malformed lines in the existing file
+    are preserved. An imported session whose id already exists is a conflict
+    unless overwrite=True, in which case the old row is replaced.
+    The dict passed in becomes the stored row (the endpoint rewrites its
+    'snapshot' to a local path before calling this)."""
+    new_rows = []
+    for s in session_dicts:
+        sid = s.get('session_id')
+        if not sid or not isinstance(s.get('messages'), list):
+            continue
+        new_rows.append((sid, s))
+    if not new_rows:
+        return [], []
+    existing_ids = _known_session_ids()
+    conflicts = sorted({sid for sid, _s in new_rows
+                        if sid in existing_ids and not overwrite})
+    if conflicts:
+        return [], conflicts
+    # Split existing rows: valid rows keyed by session_id (replaceable),
+    # everything else (malformed / no id) preserved as-is.
+    keep_lines = []
+    old = {}
+    for line in _read_lines():
+        try:
+            o = json.loads(line)
+        except Exception:
+            keep_lines.append(line)
+            continue
+        sid = o.get('session_id')
+        if sid:
+            old[sid] = o
+        else:
+            keep_lines.append(line)
+    for sid, s in new_rows:
+        prev = old.pop(sid, None)
+        # Drop the replaced session's snapshot file only if the new import
+        # does not reuse the exact same path (the endpoint has already written
+        # the new snapshot to the canonical path before calling this).
+        if prev is not None:
+            old_snap = prev.get('snapshot')
+            if old_snap and old_snap != s.get('snapshot'):
+                _remove_snapshot(old_snap)
+        old[sid] = s
+    out = list(keep_lines)
+    for o in old.values():
+        out.append(json.dumps(o, ensure_ascii=False))
+    _write_jsonl(out)
+    return sorted(sid for sid, _s in new_rows), []
+
+
+def _known_session_ids():
+    out = set()
+    for line in _read_lines():
+        try:
+            o = json.loads(line)
+        except Exception:
+            continue
+        if o.get('session_id'):
+            out.add(o['session_id'])
+    return out

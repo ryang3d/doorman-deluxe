@@ -12,6 +12,7 @@ Endpoints:
   DELETE /api/sessions/{id} delete one completed session (+ its snapshot)
   POST /api/sessions/{id}/export   zip of the session (parts=transcript,clip,snapshot)
   POST /api/sessions/export-all  zip of every persisted session (parts=..., limit=...)
+  POST /api/sessions/import        import a doorman export zip (multipart)
   DELETE /api/history       delete all sessions (+ their snapshots)
   GET  /api/live            the in-progress session, if any
   GET  /api/snapshot/{id}   per-session snapshot image
@@ -333,6 +334,92 @@ async def api_session_export_method_not_allowed(request):
     raise web.HTTPMethodNotAllowed(request.method, {'POST'})
 
 
+async def api_sessions_import(request):
+    """POST /api/sessions/import — multipart: file=<zip>, overwrite=true|false.
+    Imports every *.session.json found in the zip (+ its snapshot.jpg).
+    409 when a session id already exists and overwrite is not set.
+    400 when the upload is not a zip or contains no session records."""
+    import shutil
+    import tempfile
+    import zipfile
+    try:
+        # NOTE: request.post is a *method* — capture its dict result.
+        post = await request.post()
+    except Exception:
+        return web.json_response({'error': 'expected multipart form'}, status=400)
+    file_field = post.get('file')
+    if file_field is None or not getattr(file_field, 'file', None):
+        return web.json_response({'error': 'missing "file" field'}, status=400)
+    overwrite = post.get('overwrite', '') or ''
+    overwrite = overwrite.strip().lower() in ('1', 'true', 'yes')
+    # FileField wraps an in-memory BufferedReader (.file); read it synchronously.
+    data = file_field.file.read()
+    import io
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return web.json_response({'error': 'not a zip file'}, status=400)
+    with tempfile.TemporaryDirectory() as td:
+        zf.extractall(td)
+        candidates = []
+        for root, _dirs, files in os.walk(td):
+            for name in files:
+                if name.endswith('.session.json'):
+                    candidates.append(os.path.join(root, name))
+        if not candidates:
+            return web.json_response(
+                {'error': 'no *.session.json records in zip'}, status=400)
+        # prefer records flagged as doorman sessions; deterministic order
+        candidates.sort(key=lambda p: (0 if _looks_doorman(p) else 1, p))
+        session_dicts, warnings = [], []
+        for path in candidates:
+            try:
+                o = json.loads(open(path, encoding='utf-8').read())
+            except Exception:
+                warnings.append('skipped unreadable ' + os.path.basename(path))
+                continue
+            sid = o.get('session_id')
+            if not sid or not isinstance(o.get('messages'), list):
+                warnings.append('skipped ' + os.path.basename(path)
+                                + ' (missing session_id or messages)')
+                continue
+            session_dir = os.path.dirname(path)
+            snap_src = os.path.join(session_dir, 'snapshot.jpg')
+            if os.path.exists(snap_src):
+                d = os.path.join(_tr._data_dir(), 'snapshots')
+                os.makedirs(d, exist_ok=True)
+                snap_dst = os.path.join(d, sid + '.jpg')
+                shutil.copyfile(snap_src, snap_dst)
+                o['snapshot'] = snap_dst
+            else:
+                o['snapshot'] = None
+            clip_src = os.path.join(session_dir, 'clip.mp4')
+            if os.path.exists(clip_src):
+                d = os.path.join(_tr._data_dir(), 'clips')
+                os.makedirs(d, exist_ok=True)
+                shutil.copyfile(clip_src, os.path.join(d, sid + '.mp4'))
+                warnings.append(sid + ': clip.mp4 saved (not yet linked in the detail view)')
+            session_dicts.append(o)
+        if not session_dicts:
+            return web.json_response(
+                {'error': 'no importable session records', 'warnings': warnings},
+                status=400)
+        imported, conflicts = _tr.import_sessions(session_dicts, overwrite=overwrite)
+        if conflicts:
+            return web.json_response(
+                {'error': 'sessions already exist', 'conflicts': conflicts},
+                status=409)
+        return web.json_response({'imported': imported, 'warnings': warnings})
+
+
+def _looks_doorman(path):
+    try:
+        return bool(json.loads(open(path, encoding='utf-8').read())
+                    .get('is_doorman_session'))
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------- config
 def _current_values():
     """Wire-type values for every field (number->int/float, bool->bool)."""
@@ -556,6 +643,7 @@ def build_app():
     app.router.add_post('/api/sessions/{id}/export', api_session_export)
     app.router.add_get('/api/sessions/{id}/export', api_session_export_method_not_allowed)
     app.router.add_post('/api/sessions/export-all', api_sessions_export_all)
+    app.router.add_post('/api/sessions/import', api_sessions_import)
     app.router.add_delete('/api/history', api_history_delete)
     app.router.add_get('/api/live', api_live)
     app.router.add_get('/api/snapshot/{id}', api_snapshot)

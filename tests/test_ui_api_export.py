@@ -218,3 +218,109 @@ async def test_export_all_ids_empty_404(client, tmp_path):
     async with await client as c:
         r = await c.post('/api/sessions/export-all?parts=transcript&ids=nope')
         assert r.status == 404
+
+
+def _make_zip_for_import(sid, snapshot=True):
+    """Build a doorman-style zip (same layout as the export) for import tests.
+    Uses a real transcripts session so the JSONL shape is genuine, forces the
+    session_id, then deletes the helper's own row so the JSONL is clean for
+    the import assertion to follow."""
+    import zipfile
+    real = tr.begin_session(trigger='doorbell')
+    tr.msg('visitor', 'imported')
+    tr.msg('doorman', 'welcome')
+    rec = tr.end_session()
+    rec = dict(rec)
+    rec['session_id'] = sid          # force the id the importer should use
+    rec['is_doorman_session'] = True
+    tr.delete_session(real['session_id'])   # don't leave the helper's row behind
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr(sid + '.transcript.txt', 'DOORBELL SESSION ' + sid + '\n')
+        z.writestr(sid + '.session.json',
+                   json.dumps(rec, ensure_ascii=False))
+        if snapshot:
+            z.writestr('snapshot.jpg', b'\xff\xd8\xff\xe0IMP')
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_import_zip_creates_session_and_snapshot(client, tmp_path):
+    zdata = _make_zip_for_import('imp-0001')
+    async with await client as c:
+        import aiohttp
+        form = aiohttp.FormData()
+        form.add_field('file', zdata, filename='doorman-imp-0001.zip')
+        r = await c.post('/api/sessions/import', data=form)
+        assert r.status == 200
+        body = await r.json()
+        assert body['imported'] == ['imp-0001']
+    s = tr.load_session('imp-0001')
+    assert s is not None
+    assert s['messages'][0]['text'] == 'imported'
+    assert s['is_doorman_session'] is True
+    assert s.get('snapshot', '').endswith('imp-0001.jpg')
+    assert os.path.exists(s['snapshot'])
+    assert open(s['snapshot'], 'rb').read() == b'\xff\xd8\xff\xe0IMP'
+    assert [x['session_id'] for x in tr.load_history()['sessions']] == ['imp-0001']
+
+
+@pytest.mark.asyncio
+async def test_import_duplicate_conflict_409(client, tmp_path):
+    zdata = _make_zip_for_import('imp-0002')
+    import aiohttp
+    async with await client as c:
+        form = aiohttp.FormData()
+        form.add_field('file', zdata, filename='a.zip')
+        r = await c.post('/api/sessions/import', data=form)
+        assert r.status == 200
+        form2 = aiohttp.FormData()
+        form2.add_field('file', zdata, filename='a.zip')
+        r2 = await c.post('/api/sessions/import', data=form2)
+        assert r2.status == 409
+        body = await r2.json()
+        assert body['error'] == 'sessions already exist'
+        assert body['conflicts'] == ['imp-0002']
+    assert tr.load_session('imp-0002')['messages'][0]['text'] == 'imported'
+
+
+@pytest.mark.asyncio
+async def test_import_duplicate_overwrite(client, tmp_path):
+    zdata = _make_zip_for_import('imp-0003', snapshot=False)
+    import aiohttp
+    async with await client as c:
+        form = aiohttp.FormData()
+        form.add_field('file', zdata, filename='a.zip')
+        r = await c.post('/api/sessions/import', data=form)
+        assert r.status == 200
+        form2 = aiohttp.FormData()
+        form2.add_field('file', zdata, filename='a.zip')
+        form2.add_field('overwrite', 'true')
+        r2 = await c.post('/api/sessions/import', data=form2)
+        assert r2.status == 200
+        assert (await r2.json())['imported'] == ['imp-0003']
+    # exactly one row, not two
+    assert tr.load_history()['total'] == 1
+
+
+@pytest.mark.asyncio
+async def test_import_no_session_json_400(client):
+    import aiohttp, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        z.writestr('notes.txt', 'no sessions here')
+    async with await client as c:
+        form = aiohttp.FormData()
+        form.add_field('file', buf.getvalue(), filename='other.zip')
+        r = await c.post('/api/sessions/import', data=form)
+        assert r.status == 400
+
+
+@pytest.mark.asyncio
+async def test_import_bad_zip_400(client):
+    import aiohttp
+    async with await client as c:
+        form = aiohttp.FormData()
+        form.add_field('file', b'this is not a zip', filename='x.zip')
+        r = await c.post('/api/sessions/import', data=form)
+        assert r.status == 400
