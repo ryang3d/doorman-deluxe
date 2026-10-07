@@ -700,36 +700,26 @@ function buildSettings() {
   for (const spec of fields) (groups[spec.group] = groups[spec.group] || []).push(spec);
   const groupNames = Object.keys(groups);
 
-  // Master-detail: a left column of section links ("options") and a right
-  // pane showing the selected section's fields. Clicking a link switches the
-  // pane. Remembering settingsActiveSection keeps the user on the same pane
-  // across the re-render buildSettings() does on Save.
+  // Section picker: a dropdown ("options") above the pane. Selecting a section
+  // switches the pane. Remembering settingsActiveSection keeps the user on the
+  // same section across the re-render buildSettings() does on Save.
   const layout = h('div', { class: 'settings-layout' });
-  const nav = h('nav', { class: 'settings-nav' },
-    h('span', { class: 'settings-nav-label', text: 'Settings' }));
+  const sectionSelect = h('select', {
+    class: 'settings-section', id: 'settings-section',
+  }, groupNames.map(gname =>
+    h('option', { value: gname, text: gname + ' (' + groups[gname].length + ')' })));
   const pane = h('section', { class: 'settings-pane' });
-  layout.append(nav, pane);
-
-  const navItems = {};
-  for (const gname of groupNames) {
-    const btn = h('button', {
-      class: 'settings-nav-link',
-      onclick: () => setActiveSection(gname),
-    });
-    btn.append(document.createTextNode(gname));
-    btn.append(h('span', { class: 'settings-nav-count', text: String(groups[gname].length) }));
-    nav.append(btn);
-    navItems[gname] = btn;
-  }
+  layout.append(sectionSelect, pane);
 
   // Initial section: the remembered one if it still exists, else the first.
   if (!settingsActiveSection || !groupNames.includes(settingsActiveSection)) {
     settingsActiveSection = groupNames[0] || null;
   }
+  sectionSelect.value = settingsActiveSection || '';
+  sectionSelect.addEventListener('change', () => {
+    setActiveSection(sectionSelect.value);
+  });
   renderActivePane(pane, groups);
-  for (const gname of groupNames) {
-    navItems[gname].classList.toggle('active', gname === settingsActiveSection);
-  }
   root.append(layout);
 
   view.replaceChildren(root);
@@ -737,8 +727,8 @@ function buildSettings() {
 
   function setActiveSection(gname) {
     settingsActiveSection = gname;
+    sectionSelect.value = gname;   // keep the dropdown in sync (search-jump etc.)
     renderActivePane(pane, groups);
-    for (const g of groupNames) navItems[g].classList.toggle('active', g === gname);
     applySettingsFilter();
   }
 
@@ -786,16 +776,15 @@ function buildSettings() {
         if (fieldMatchesQuery(spec, q)) { secMatch += 1; matched += 1; }
       }
       matchByGroup[gname] = secMatch;
-      navItems[gname].classList.toggle('dim', !!q && secMatch === 0);
     }
     const prev = settingsActiveSection;
     if (q && matchByGroup[prev] === 0) {
       const first = groupNames.find(g => matchByGroup[g] > 0);
       if (first) settingsActiveSection = first;
     }
-    if (settingsActiveSection !== prev && navItems[settingsActiveSection]) {
+    if (settingsActiveSection !== prev && sectionSelect) {
+      sectionSelect.value = settingsActiveSection;
       renderActivePane(pane, groups);
-      for (const g of groupNames) navItems[g].classList.toggle('active', g === settingsActiveSection);
     }
     $$('.row', pane).forEach(row => {
       const key = row.dataset.key;
