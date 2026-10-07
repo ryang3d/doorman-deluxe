@@ -380,12 +380,24 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 @media (max-width: 720px) {
   .topbar { flex-wrap: wrap; gap: 8px; }
   .top-status { display: none; }
-  .hist-item { grid-template-columns: 28px 1fr auto auto; }
-  .hist-item .when { grid-column: 2 / -1; }
+  /* History rows: 3 columns — checkbox | when/name stacked | snap/actions.
+     Explicit grid placement: name lands in the wide center column (row 2),
+     not the 28px checkbox column, so long labels ("Doorbell press") no
+     longer collide with the snapshot. */
+  .hist-item { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: 6px; }
+  .hist-item .when { grid-column: 2; grid-row: 1; }
+  .hist-item .name { grid-column: 2; grid-row: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist-item .snap { grid-column: 3; grid-row: 1; }
+  .hist-item .row-actions { grid-column: 3; grid-row: 2; }
   .hist-item .meta { display: none; }
+  /* Toolbar: static full-width row instead of a float, so the pager below no
+     longer wraps around it and overlaps the export/import buttons. */
+  .hist-toolbar { float: none; width: 100%; margin: 6px 0 0; }
+  .hist-pager { clear: both; flex-wrap: wrap; row-gap: 6px; }
   .detail .body { grid-template-columns: 1fr; }
   .media-pane { border-right: none; border-bottom: 1px solid var(--border); }
   .row { grid-template-columns: 1fr; }
+  .settings-bar { flex-wrap: wrap; row-gap: 8px; }
 }
 
 /* ---------- prompts ---------- */
