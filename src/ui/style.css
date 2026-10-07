@@ -241,26 +241,75 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 .settings-search:focus { outline: none; border-color: var(--accent); }
 .settings-search::placeholder { color: var(--muted); }
 .settings-search-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
-/* Jump nav: horizontal chip row, wraps on narrow screens. */
-.settings-jump {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 16px;
+/* Master-detail settings: a left column of section links and a right pane
+   showing the selected section's fields. The nav scrolls with the page on
+   short viewports; it stays put on tall ones via a media query below. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
-.settings-jump-label { color: var(--muted); font-size: 12px; margin-right: 4px; }
-.settings-jump-link {
-  text-decoration: none;
-  color: var(--text);
+.settings-nav { display: flex; flex-direction: column; gap: 4px; }
+.settings-nav-label {
+  color: var(--muted); font-size: 12px; text-transform: uppercase;
+  letter-spacing: .5px; padding: 0 8px 6px;
+}
+.settings-nav-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-nav-link:hover { color: var(--text); background: var(--panel); }
+.settings-nav-link.active { color: var(--text); background: var(--accent-dim); }
+.settings-nav-link.dim { opacity: .4; }
+.settings-nav-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.settings-nav-link.active .settings-nav-count { color: var(--text); }
+.settings-pane {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 4px 12px;
-  font-size: 13px;
-  white-space: nowrap;
+  border-radius: 10px;
+  padding: 6px 16px 14px;
+  min-height: 120px;
 }
-.settings-jump-link:hover { border-color: var(--accent); color: var(--accent); }
+.settings-pane-title {
+  margin: 10px 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+@media (min-width: 721px) {
+  .settings-nav { position: sticky; top: 118px; }
+}
+@media (max-width: 720px) {
+  .settings-layout { grid-template-columns: 1fr; gap: 12px; }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    position: static;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+  .settings-nav-label { padding: 0 4px 4px; width: 100%; }
+  .settings-nav-link { width: auto; }
+}
 @media (max-width: 640px) {
   .settings-search { width: 100%; max-width: none; order: -1; flex-basis: 100%; }
 }
@@ -281,34 +330,17 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   color: var(--text);
 }
 .btn.danger { background: var(--err); }
-.group { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
-/* Jump-nav targets: leave room for the sticky top bar + settings bar so a
-   section header isn't covered when scrollIntoView aligns it to the top. */
-.group { scroll-margin-top: 118px; }
-.group > summary {
-  padding: 12px 16px;
-  font-weight: 700;
-  cursor: pointer;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  user-select: none;
-}
-.group > summary::-webkit-details-marker { display: none; }
-.group > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
-.group[open] > summary::before { transform: rotate(90deg); }
-.group .rows { padding: 4px 16px 14px; }
-/* Per-section 'Show advanced' sub-toggle: nested, visually lighter. */
-.group details.advanced { margin: 4px 0 6px; }
-.group details.advanced summary {
+/* Per-section 'Show advanced' sub-toggle: nested, visually lighter. Lives in
+   the settings pane (the active section's body), not under an accordion. */
+.settings-pane details.advanced { margin: 4px 0 6px; }
+.settings-pane details.advanced summary {
   padding: 4px 2px;
   color: var(--muted);
   font-size: 12.5px;
   border-top: 1px dashed var(--border);
 }
-.group details.advanced summary:hover { color: var(--accent); }
-.group details.advanced .rows { padding-top: 6px; }
+.settings-pane details.advanced summary:hover { color: var(--accent); }
+.settings-pane details.advanced .rows { padding-top: 6px; }
 .row {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -317,7 +349,6 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   padding: 8px 0;
   border-top: 1px solid var(--border);
 }
-.row:first-child { border-top: none; }
 .row label { font-size: 14px; font-weight: 500; }
 .row .help { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .row .badge {

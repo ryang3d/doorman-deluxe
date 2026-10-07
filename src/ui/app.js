@@ -637,10 +637,10 @@ async function renderLive() {
 let settingsCache = null;   // {key: spec-dict + dirty}
 let settingsInputs = {};    // {key: {input, spec}}
 let promptsState = null;   // {key: {spec, input, dirty}}
-// Sections the user has explicitly opened. buildSettings() re-runs on every
-// Save (and on route entry), which would otherwise reset every <details> to
-// collapsed. Remembering the open set keeps the user's place across that.
-const openSections = new Set();
+// Which section's pane is open in the master-detail settings layout.
+// buildSettings() re-runs on every Save (and on route entry); remembering the
+// active section keeps the user on the same pane across that re-render.
+let settingsActiveSection = null;
 // Per-section 'Show advanced' toggles the user has opened, so a re-render
 // keeps the tuning fields visible for sections they've expanded.
 const advancedShown = new Set();
@@ -666,34 +666,61 @@ function buildSettings() {
 
   const groups = {};
   for (const spec of fields) (groups[spec.group] = groups[spec.group] || []).push(spec);
+  const groupNames = Object.keys(groups);
 
-  // Jump nav: one chip per group, in section order. Clicking scrolls to the
-  // section and opens it. Order follows `groups` insertion order (first
-  // appearance), which matches the rendered section order exactly.
-  const jumpNav = h('nav', { id: 'settings-jump', class: 'settings-jump' },
-    h('span', { class: 'settings-jump-label', text: 'Jump to:' }));
-  for (const [gname, specs] of Object.entries(groups)) {
-    const id = 'sec-' + gname.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const a = h('a', { class: 'settings-jump-link', href: '#' + id }, gname);
-    a.title = specs.length + ' field' + (specs.length > 1 ? 's' : '');
-    a.addEventListener('click', e => {
-      e.preventDefault();
-      const t = document.getElementById(id);
-      if (t) { t.open = true; t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  // Master-detail: a left column of section links ("options") and a right
+  // pane showing the selected section's fields. Clicking a link switches the
+  // pane. Remembering settingsActiveSection keeps the user on the same pane
+  // across the re-render buildSettings() does on Save.
+  const layout = h('div', { class: 'settings-layout' });
+  const nav = h('nav', { class: 'settings-nav' },
+    h('span', { class: 'settings-nav-label', text: 'Settings' }));
+  const pane = h('section', { class: 'settings-pane' });
+  layout.append(nav, pane);
+
+  const navItems = {};
+  for (const gname of groupNames) {
+    const btn = h('button', {
+      class: 'settings-nav-link',
+      onclick: () => setActiveSection(gname),
     });
-    jumpNav.append(a);
+    btn.append(document.createTextNode(gname));
+    btn.append(h('span', { class: 'settings-nav-count', text: String(groups[gname].length) }));
+    nav.append(btn);
+    navItems[gname] = btn;
   }
-  root.append(jumpNav);
 
-  for (const [gname, specs] of Object.entries(groups)) {
-    const normal = specs.filter(s => !s.advanced);
-    const adv = specs.filter(s => s.advanced);
+  // Initial section: the remembered one if it still exists, else the first.
+  if (!settingsActiveSection || !groupNames.includes(settingsActiveSection)) {
+    settingsActiveSection = groupNames[0] || null;
+  }
+  renderActivePane(pane, groups);
+  for (const gname of groupNames) {
+    navItems[gname].classList.toggle('active', gname === settingsActiveSection);
+  }
+  root.append(layout);
+
+  view.replaceChildren(root);
+  updateDirtyHint();
+
+  function setActiveSection(gname) {
+    settingsActiveSection = gname;
+    renderActivePane(pane, groups);
+    for (const g of groupNames) navItems[g].classList.toggle('active', g === gname);
+    applySettingsFilter();
+  }
+
+  // Render the selected section's fields into the right pane: normal rows,
+  // then the rarely-tuned advanced fields behind a per-section toggle that
+  // remembers its open state across re-renders (advancedShown).
+  function renderActivePane(target, groups) {
+    const gname = settingsActiveSection;
+    const specs = gname ? groups[gname] : [];
+    target.replaceChildren(h('h2', { class: 'settings-pane-title', text: gname || '' }));
     const body = h('div', { class: 'rows' });
-    for (const spec of normal) body.append(settingRow(spec));
+    for (const spec of specs.filter(s => !s.advanced)) body.append(settingRow(spec));
+    const adv = specs.filter(s => s.advanced);
     if (adv.length) {
-      // Rarely-touched tuning fields live behind a per-section toggle so the
-      // section stays short by default. Remembers its open state across the
-      // re-render buildSettings() does on Save (advancedShown, like openSections).
       const advDetails = h('details', { class: 'advanced' },
         h('summary', { text: 'Show advanced (' + adv.length + ')' }),
         h('div', { class: 'rows adv-rows' }));
@@ -707,55 +734,50 @@ function buildSettings() {
       });
       body.append(advDetails);
     }
-    const dl = h('details', {
-      class: 'group',
-      id: 'sec-' + gname.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    },
-      h('summary', { text: gname }),
-      body);
-    dl.open = openSections.has(gname);
-    dl.addEventListener('toggle', () => {
-      if (dl.open) openSections.add(gname); else openSections.delete(gname);
-    });
-    root.append(dl);
+    target.append(body);
   }
 
-  view.replaceChildren(root);
-  updateDirtyHint();
-
-  // Live search: hide non-matching rows, auto-open sections that have hits.
-  // A search bypasses the advanced toggle so a tuning field is still findable;
-  // clearing the query restores each section's remembered open state.
+  // Live search: a query surfaces matching rows in the active pane, marks each
+  // section's match count in the nav (dimming zero-match sections), and if the
+  // active section has no match, jumps to the first section that does. Counts
+  // come from the data model so every section is reflected, not just the one
+  // currently rendered. A query bypasses the advanced toggle so tuning fields
+  // stay findable; clearing it restores the active section's remembered state.
   function applySettingsFilter() {
     const q = (searchInput.value || '').trim();
+    const matchByGroup = {};
     let total = 0, matched = 0;
-    $$('details.group', root).forEach(sec => {
-      const gname = sec.querySelector('summary').textContent;
-      const advDetails = sec.querySelector('details.advanced');
-      const advOpen = advancedShown.has(gname);
+    for (const gname of groupNames) {
       let secMatch = 0;
-      $$('.row', sec).forEach(row => {
+      for (const spec of groups[gname]) {
         total += 1;
-        const key = row.dataset.key;
-        const spec = settingsCache ? settingsCache[key] : null;
-        const isAdv = !!(spec && spec.advanced);
-        const hit = fieldMatchesQuery(spec || { label: key, key: key, help: '' }, q);
-        const visible = q ? hit : (isAdv ? advOpen : true);
-        row.hidden = !visible;
-        if (visible) { secMatch += 1; matched += 1; }
-      });
-      if (q) {
-        sec.open = secMatch > 0;   // while searching, only matching sections stay open
-        if (advDetails) {          // surface matching advanced rows
-          const advHit = $$('.row', advDetails).some(r => !r.hidden);
-          advDetails.open = advHit;
-        }
-      } else {
-        // Query cleared: restore the user's remembered open state.
-        sec.open = openSections.has(gname);
-        if (advDetails) advDetails.open = advOpen;
+        if (fieldMatchesQuery(spec, q)) { secMatch += 1; matched += 1; }
       }
+      matchByGroup[gname] = secMatch;
+      navItems[gname].classList.toggle('dim', !!q && secMatch === 0);
+    }
+    const prev = settingsActiveSection;
+    if (q && matchByGroup[prev] === 0) {
+      const first = groupNames.find(g => matchByGroup[g] > 0);
+      if (first) settingsActiveSection = first;
+    }
+    if (settingsActiveSection !== prev && navItems[settingsActiveSection]) {
+      renderActivePane(pane, groups);
+      for (const g of groupNames) navItems[g].classList.toggle('active', g === settingsActiveSection);
+    }
+    $$('.row', pane).forEach(row => {
+      const key = row.dataset.key;
+      const spec = settingsCache ? settingsCache[key] : null;
+      const isAdv = !!(spec && spec.advanced);
+      const hit = fieldMatchesQuery(spec || { label: key, key: key, help: '' }, q);
+      const visible = q ? hit : (isAdv ? advancedShown.has(settingsActiveSection) : true);
+      row.hidden = !visible;
     });
+    const advDetails = $('details.advanced', pane);
+    if (advDetails) {
+      const advHit = $$('.row', advDetails).some(r => !r.hidden);
+      advDetails.open = q ? advHit : advancedShown.has(settingsActiveSection);
+    }
     searchCount.hidden = !q;
     searchCount.textContent = q ? matched + ' of ' + total + ' settings' : '';
   }
