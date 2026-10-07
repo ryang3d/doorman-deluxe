@@ -425,8 +425,8 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 @media (max-width: 720px) {
   .topbar { flex-wrap: wrap; gap: 8px; }
   .top-status { display: none; }
-  .hist-item { grid-template-columns: 1fr auto auto; }
-  .hist-item .when { grid-column: 1 / -1; }
+  .hist-item { grid-template-columns: 28px 1fr auto auto; }
+  .hist-item .when { grid-column: 2 / -1; }
   .hist-item .meta { display: none; }
   .detail .body { grid-template-columns: 1fr; }
   .media-pane { border-right: none; border-bottom: 1px solid var(--border); }
@@ -499,3 +499,16 @@ a.clip-dl:hover { text-decoration: underline; }
 .opt .n { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-left: auto; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .modal input[type=file] { width: 100%; font-size: 13px; margin-bottom: 10px; color: var(--muted); }
+
+/* Export-select checkbox: .hist-item gains a leading 28px column.
+   The base rule is grid-template-columns:150px 1fr auto auto auto (5 cols);
+   this widens it to 6 so the checkbox (first child) gets its own cell. */
+.hist-item { grid-template-columns: 28px 150px 1fr auto auto auto; }
+.hist-item .hist-check {
+  width: 16px; height: 16px; margin: 0;
+  accent-color: var(--accent, #e8734a);
+  cursor: pointer; align-self: center; justify-self: start;
+}
+.hist-item .row-actions { display: flex; gap: 6px; align-items: center; justify-self: end; }
+.detail .head .del-btn { margin-left: 0; }
+.detail .head .del-btn:first-of-type { margin-left: auto; }

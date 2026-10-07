@@ -271,7 +271,19 @@ function sentinelInView() {
 
 function histItem(sum) {
   const who = whoLabel(sum);
+  histRegistry[sum.session_id] = sum;   // availability math for "Export selected"
   const row = h('a', { href: '#session/' + sum.session_id, class: 'hist-item' },
+    h('input', { class: 'hist-check', type: 'checkbox',
+      title: 'Select for export',
+      onclick(ev) {
+        ev.preventDefault();   // we own the visual state (set .checked below)
+        ev.stopPropagation();  // stop the row's #session link from firing
+        const on = !ev.target.checked;   // old value -> desired new value
+        ev.target.checked = on;
+        if (on) exportSelection.add(sum.session_id);
+        else exportSelection.delete(sum.session_id);
+        updateExportSelectedBtn();
+      } }),
     h('div', { class: 'when', text: fmtWhen(sum.started_at, { alwaysDate: true }) }),
     h('div', { class: 'name' }, who),
     h('div', { class: 'meta', text:
@@ -281,17 +293,26 @@ function histItem(sum) {
                   loading: 'lazy',
                   onerror() { this.replaceWith(h('span', { class: 'snap', style: 'display:block' })); } })
       : null,
-    h('button', { class: 'del-btn', title: 'Delete this visit', text: '✕',
-      onclick(ev) {
-        ev.preventDefault();   // don't follow the row link
-        ev.stopPropagation();
-        if (!confirm('Delete this visit?\n' + who + ' · ' +
-                     fmtWhen(sum.started_at, { alwaysDate: true }) +
-                     '\nTranscript and snapshot are removed. This cannot be undone.')) return;
-        api('/api/sessions/' + encodeURIComponent(sum.session_id), { method: 'DELETE' })
-          .then(() => { toast('Visit deleted.', 'ok'); renderHistory(); })
-          .catch(e => toast('Delete failed: ' + e.message, 'err'));
-      } }),
+    h('div', { class: 'row-actions' },
+      h('button', { class: 'del-btn', title: 'Export this visit', text: '⬇',
+        onclick(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          doExportSession(sum.session_id);
+        } }),
+      h('button', { class: 'del-btn', title: 'Delete this visit', text: '✕',
+        onclick(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!confirm('Delete this visit?\n' + who + ' · ' +
+                       fmtWhen(sum.started_at, { alwaysDate: true }) +
+                       '\nTranscript and snapshot are removed. This cannot be undone.')) return;
+          api('/api/sessions/' + encodeURIComponent(sum.session_id), { method: 'DELETE' })
+            .then(() => { toast('Visit deleted.', 'ok'); exportSelection.delete(sum.session_id);
+                         updateExportSelectedBtn(); renderHistory(); })
+            .catch(e => toast('Delete failed: ' + e.message, 'err'));
+        } }),
+    ),
   );
   return row;
 }
@@ -566,7 +587,9 @@ async function renderSession(id) {
           when +
           (s.status ? ' · ' + s.status : '') +
           (s.duration_s != null ? ' · ' + fmtDur(s.duration_s) : '') }),
-        h('button', { class: 'del-btn', style: 'margin-left:auto', text: 'Delete',
+        h('button', { class: 'del-btn', style: 'margin-left:auto', text: 'Export',
+          onclick: () => doExportSession(s.session_id) }),
+        h('button', { class: 'del-btn', text: 'Delete',
           onclick: async () => {
             if (!confirm('Delete this visit?\nTranscript and snapshot are removed. This cannot be undone.')) return;
             try {
