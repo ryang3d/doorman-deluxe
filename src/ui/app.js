@@ -276,10 +276,10 @@ function histItem(sum) {
     h('input', { class: 'hist-check', type: 'checkbox',
       title: 'Select for export',
       onclick(ev) {
-        ev.preventDefault();   // we own the visual state (set .checked below)
-        ev.stopPropagation();  // stop the row's #session link from firing
-        const on = !ev.target.checked;   // old value -> desired new value
-        ev.target.checked = on;
+        ev.stopPropagation();  // stop the row's #session link from firing; let the
+                               // checkbox toggle naturally (no preventDefault, which
+                               // would revert the visual state after we set it)
+        const on = ev.target.checked;   // natural toggle: this is the new value
         if (on) exportSelection.add(sum.session_id);
         else exportSelection.delete(sum.session_id);
         updateExportSelectedBtn();
@@ -1228,7 +1228,7 @@ async function doExportSession(id) {
       if (!parts) { toast('Pick at least one part.', 'err'); return; }
       overlay.remove();
       try {
-        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/export?parts=' + encodeURIComponent(parts));
+        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/export?parts=' + encodeURIComponent(parts), { method: 'POST' });
         if (res.status === 409) { toast('This session is live right now; export it after it ends.', 'err'); return; }
         if (!res.ok) {
           let msg = 'HTTP ' + res.status;
@@ -1261,7 +1261,7 @@ async function doExportBulk(title, available, ids) {
       const btn = ids ? $('#export-selected-btn') : $('#export-all-btn');
       if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
       try {
-        const res = await fetch('/api/sessions/export-all?' + q.toString());
+        const res = await fetch('/api/sessions/export-all?' + q.toString(), { method: 'POST' });
         if (!res.ok) {
           let msg = 'HTTP ' + res.status;
           try { msg = (await res.json()).error || msg; } catch (e) {}
