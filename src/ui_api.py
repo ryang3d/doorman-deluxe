@@ -7,7 +7,7 @@ the transcript store and the camera health probe directly.
 
 Endpoints:
   GET  /api/status          health/summary dashboard payload
-  GET  /api/history         session summaries, newest first
+  GET  /api/history         session summaries + total, newest first; limit=all for everything
   GET  /api/sessions/{id}   full session (transcript + metadata)
   DELETE /api/sessions/{id} delete one completed session (+ its snapshot)
   DELETE /api/history       delete all sessions (+ their snapshots)
@@ -71,12 +71,21 @@ async def api_status(request):
 
 # --------------------------------------------------------------- history
 async def api_history(request):
+    """GET /api/history?limit=N&offset=M — sessions + total, newest first.
+    limit=all returns every completed session (sentinel: the JSONL is at most
+    a few thousand lines, so a big-but-bounded limit is deliberate)."""
     try:
-        limit = int(request.query.get('limit', '50'))
+        limit_s = request.query.get('limit', '50')
+        limit = None if limit_s == 'all' else int(limit_s)
         offset = int(request.query.get('offset', '0'))
+        if limit is not None and limit < 1:
+            limit = None
+        if offset < 0:
+            return web.json_response({'error': 'bad limit/offset'}, status=400)
     except ValueError:
         return web.json_response({'error': 'bad limit/offset'}, status=400)
-    return web.json_response(_tr.load_history(limit=limit, offset=offset))
+    d = _tr.load_history(limit=10 ** 9 if limit is None else limit, offset=offset)
+    return web.json_response(d)
 
 
 async def api_session(request):

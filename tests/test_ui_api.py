@@ -229,3 +229,21 @@ async def test_prompts_malformed_bodies_dont_500(client):
         r = await c.post('/api/prompts', data='{not json',
                          headers={'Content-Type': 'application/json'})
         assert r.status == 400
+
+
+@pytest.mark.asyncio
+async def test_history_returns_sessions_and_total(client, tmp_path):
+    import transcripts as t
+    for i in range(4):
+        t.begin_session(name='S%d' % i)
+        t.msg('visitor', 'hi')
+        t.end_session()
+    async with await client as c:
+        r = await c.get('/api/history?limit=3&offset=0')
+        assert r.status == 200
+        d = await r.json()
+        assert d['total'] == 4
+        assert [x['recognized_name'] for x in d['sessions']] == ['S3', 'S2', 'S1']
+        r2 = await c.get('/api/history?limit=all')
+        assert (await r2.json())['total'] == 4
+        assert len((await r2.json())['sessions']) == 4
