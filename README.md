@@ -39,7 +39,7 @@ own version.
 - Frigate with go2rtc (bundled) exposing a two-way stream for the doorbell.
 - Home Assistant (for notify, camera.snapshot, and optional doorbell-press trigger).
 - **Gemini engine:** Google Gemini API key.
-- **Local engine** (`DOORMAN_VOICE_ENGINE=local`): an STT service (faster-whisper `:10302` recommended, or Parakeet `:10301` - both bundled in `docker-compose.yml`), an OpenAI-compatible LLM endpoint (`/chat/completions` with tool calling - SGLang/Ollama/vLLM, external), and a TTS endpoint (Voicebox serving Chatterbox, external).
+- **Local engine** (`DOORMAN_VOICE_ENGINE=local`): an STT service (faster-whisper `:10302` recommended, or Parakeet `:10301` - both bundled in `docker-compose.yml`), an OpenAI-compatible LLM endpoint (`/chat/completions` with tool calling - SGLang/Ollama/vLLM, external), and a TTS endpoint ([Voicebox](https://voicebox.sh/) - [github.com/jamiepine/voicebox](https://github.com/jamiepine/voicebox) - serving Chatterbox, external).
 
 ### Frigate version requirement
 
@@ -167,7 +167,7 @@ bring up only what you need:
 `docker compose up -d parakeet` # Parakeet TDT 0.6B v3 on :10301 (alternative STT)
 
 The LLM brain and TTS are external to this compose file (your SGLang/Ollama instance and a
-Voicebox box); Doorman reaches them over the LAN via the `DOORMAN_LLM_*` / `DOORMAN_TTS_*`
+[Voicebox](https://voicebox.sh/) box - [github.com/jamiepine/voicebox](https://github.com/jamiepine/voicebox)); Doorman reaches them over the LAN via the `DOORMAN_LLM_*` / `DOORMAN_TTS_*`
 keys.
 
 STT: both services expose `POST /transcribe`; point `DOORMAN_STT_BASE_URL` at whichever
@@ -182,7 +182,7 @@ LLM brain: any OpenAI-compatible `/chat/completions` endpoint with tool support
 `DOORMAN_LLM_TEMPERATURE`, `DOORMAN_LLM_MAX_TOKENS`, `DOORMAN_LLM_THINK` (qwen3 think
 chain; off for snappy door replies).
 
-TTS: Voicebox serving Chatterbox (`DOORMAN_TTS_BASE_URL`, plus per-language
+TTS: [Voicebox](https://voicebox.sh/) serving Chatterbox (`DOORMAN_TTS_BASE_URL`, plus per-language
 profile/engine keys: `chatterbox_turbo` for EN, `chatterbox` for ES).
 
 Local-engine audio tuning (all in `.env.example` with defaults):
