@@ -233,3 +233,34 @@ async def capture_session_snapshot(cfg, session_id):
         return path
     except Exception:
         return None
+
+def export_transcript_text(session):
+    """Human-readable transcript for one session dict (as stored in the JSONL).
+    One line per message: "<HH:MM> <Role> · <kind>  <text>" under a header.
+    Timestamps are the message's own ISO ts, rendered in the household
+    timezone to match the Web UI."""
+    from datetime import datetime
+    import zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+    except Exception:
+        tz = None
+    lines = ['DOORBELL SESSION %s' % session.get('session_id'),
+             'Trigger: %s%s' % (session.get('trigger') or 'unknown',
+                                (' (' + session.get('recognized_name') + ')'
+                                 if session.get('recognized_name') else '')),
+             'Started: %s' % (session.get('started_at') or '?'),
+             '', '- - - - - - - - - -']
+    for m in session.get('messages', []):
+        ts = m.get('ts') or ''
+        t = ''
+        try:
+            d = datetime.fromisoformat(ts)
+            t = d.astimezone(tz).strftime('%H:%M') if tz else d.strftime('%H:%M')
+        except Exception:
+            pass
+        role = str(m.get('role') or 'system').capitalize()
+        who = role + (' · ' + m['kind'] if m.get('kind') else '')
+        text = (m.get('text') or '').strip()
+        lines.append(('%s %s' % (t, who)).ljust(24) + text)
+    return '\n'.join(lines) + '\n'
