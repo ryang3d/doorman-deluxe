@@ -10,6 +10,7 @@ Endpoints:
   GET  /api/history         session summaries + total, newest first; limit=all for everything
   GET  /api/sessions/{id}   full session (transcript + metadata)
   DELETE /api/sessions/{id} delete one completed session (+ its snapshot)
+  POST /api/sessions/{id}/export   zip of the session (parts=transcript,clip,snapshot)
   DELETE /api/history       delete all sessions (+ their snapshots)
   GET  /api/live            the in-progress session, if any
   GET  /api/snapshot/{id}   per-session snapshot image
@@ -174,6 +175,114 @@ async def api_clip(request):
 def _clip_url(event_id):
     base = _cfg().get('FRIGATE_URL') or ''
     return base.rstrip('/') + '/api/events/' + event_id + '/clip.mp4'
+
+
+# --------------------------------------------------------------- export / import
+_EXPORT_PARTS = ('transcript', 'clip', 'snapshot')
+
+
+def _parse_export_parts(parts_raw):
+    """Parse ?parts= into a set of requested parts.
+    Returns (include, None) on success, or (None, <400 response>) when any
+    requested part is unknown or none are valid."""
+    requested = [p for p in parts_raw.split(',') if p]
+    unknown = [p for p in requested if p not in _EXPORT_PARTS]
+    if unknown:
+        return None, web.json_response(
+            {'error': 'unknown part(s): ' + ','.join(unknown)}, status=400)
+    if not requested:
+        return None, web.json_response(
+            {'error': 'no valid parts in ?parts='}, status=400)
+    return set(requested), None
+
+
+def _build_session_zip(session, include, clip=None):
+    """Zip bytes for one session. `include` is a set of requested parts
+    (subset of _EXPORT_PARTS); `clip` is the Frigate clip bytes, or None.
+    Returns (zip_bytes, {part: bool included}). transcript + session.json are
+    always in the zip; a requested part that is unavailable is left out."""
+    import io
+    import zipfile
+    import transcripts as _tr
+    buf = io.BytesIO()
+    sid = session['session_id']
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(sid + '.transcript.txt', _tr.export_transcript_text(session))
+        meta = dict(session)
+        meta['is_doorman_session'] = True
+        z.writestr(sid + '.session.json', json.dumps(meta, ensure_ascii=False))
+        parts = {'transcript': True}
+        snap = session.get('snapshot')
+        if 'snapshot' in include and snap and os.path.exists(snap):
+            z.write(snap, 'snapshot.jpg')
+            parts['snapshot'] = True
+        else:
+            parts['snapshot'] = False
+        if 'clip' in include:
+            parts['clip'] = bool(clip)
+            if clip:
+                z.writestr('clip.mp4', clip)
+        else:
+            parts['clip'] = False
+    return buf.getvalue(), parts
+
+
+async def _resolve_clip(session_id):
+    """Resolve a session to a Frigate event and return its clip bytes, or None
+    (never raises). Reuses the api_clip resolution path + cache so a repeat
+    view of the same session does not re-resolve. Returns None when the
+    session has no resolvable event, Frigate is unreachable, or the fetch
+    fails — the caller simply omits clip.mp4 from the zip."""
+    ev = _CLIP_CACHE.get(session_id)
+    if ev is None:
+        try:
+            resolved = await _clips.resolve_event_id(session_id)
+        except Exception as e:
+            log.warning('export clip resolve error: %s', e)
+            return None
+        if not resolved:
+            return None
+        ev = resolved['event_id']
+        _CLIP_CACHE[session_id] = ev
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(_clip_url(ev),
+                                timeout=aiohttp.ClientTimeout(total=60)) as r:
+                if r.status != 200:
+                    return None
+                return await r.read()
+    except Exception as e:
+        log.warning('export clip fetch error: %s', e)
+        return None
+
+
+async def api_session_export(request):
+    """POST /api/sessions/{id}/export?parts=transcript,snapshot,clip
+    -> application/zip. 409 while the session is live, 404 if unknown."""
+    include, err = _parse_export_parts(request.query.get('parts', 'transcript'))
+    if err is not None:
+        return err
+    sid = request.match_info['id']
+    live = _tr.active_session()
+    if live and live['session_id'] == sid:
+        return web.json_response(
+            {'error': 'session is live; export it after it ends'}, status=409)
+    s = _tr.load_session(sid)
+    if s is None:
+        return web.json_response({'error': 'not found'}, status=404)
+    clip = await _resolve_clip(sid) if 'clip' in include else None
+    data, _parts = _build_session_zip(s, include, clip=clip)
+    return web.Response(
+        body=data, content_type='application/zip',
+        headers={'Content-Disposition':
+                 'attachment; filename="doorman-' + sid + '.zip"'})
+
+
+async def api_session_export_method_not_allowed(request):
+    # GET on .../export -> explicit 405 (router answers it for us; this
+    # documents intent) — no code needed beyond registration:
+    raise web.HTTPMethodNotAllowed(request.method, {'POST'})
 
 
 # --------------------------------------------------------------- config
@@ -396,6 +505,8 @@ def build_app():
     app.router.add_get('/api/history', api_history)
     app.router.add_get('/api/sessions/{id}', api_session)
     app.router.add_delete('/api/sessions/{id}', api_session_delete)
+    app.router.add_post('/api/sessions/{id}/export', api_session_export)
+    app.router.add_get('/api/sessions/{id}/export', api_session_export_method_not_allowed)
     app.router.add_delete('/api/history', api_history_delete)
     app.router.add_get('/api/live', api_live)
     app.router.add_get('/api/snapshot/{id}', api_snapshot)
