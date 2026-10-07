@@ -25,7 +25,7 @@ def test_history_most_recent_first(tmp_path):
     _use_tmp_dir(str(tmp_path))
     tr.begin_session(name='A'); tr.msg('visitor', 'hi'); tr.end_session()
     tr.begin_session(name='B'); tr.msg('visitor', 'hi'); tr.end_session()
-    hist = tr.load_history()
+    hist = tr.load_history()['sessions']
     assert [h['recognized_name'] for h in hist] == ['B', 'A']
     assert hist[0]['message_count'] == 1
 

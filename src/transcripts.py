@@ -91,8 +91,8 @@ def end_session(status='ended', error=None):
         pass
     return s
 
-def load_history(limit=50, offset=0):
-    """Most-recent-first list of session summaries."""
+def _history_rows():
+    """All completed sessions as summary dicts, newest-first."""
     p = _jsonl_path()
     rows = []
     if os.path.exists(p):
@@ -118,7 +118,17 @@ def load_history(limit=50, offset=0):
                     'frigate_event_id': o.get('frigate_event_id'),
                 })
     rows.sort(key=lambda r: r['started_at'] or '', reverse=True)
-    return rows[offset:offset + limit]
+    return rows
+
+
+def load_history(limit=50, offset=0):
+    """Most-recent-first session summaries.
+
+    Returns {'sessions': [...], 'total': N} where total is the full completed
+    row count, so callers can build pagination without a second read.
+    """
+    rows = _history_rows()
+    return {'sessions': rows[offset:offset + limit], 'total': len(rows)}
 
 def load_session(session_id):
     p = _jsonl_path()

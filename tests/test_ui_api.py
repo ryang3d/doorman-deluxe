@@ -95,9 +95,10 @@ async def test_history_and_session_roundtrip(client):
     async with await client as c:
         r = await c.get('/api/history')
         assert r.status == 200
-        rows = await r.json()
-        assert rows and rows[0]['recognized_name'] == 'Ryan'
-        sid = rows[0]['session_id']
+        d = await r.json()
+        assert d['total'] == 1
+        assert d['sessions'] and d['sessions'][0]['recognized_name'] == 'Ryan'
+        sid = d['sessions'][0]['session_id']
         r2 = await c.get('/api/sessions/' + sid)
         assert r2.status == 200
         s = await r2.json()

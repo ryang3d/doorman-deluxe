@@ -25,7 +25,7 @@ def test_load_history_includes_event_id(tmp_path):
     _use_tmp_dir(str(tmp_path))
     tr.begin_session(trigger='person', frigate_event_id='1.1-a')
     tr.end_session()
-    row = tr.load_history()[0]
+    row = tr.load_history()['sessions'][0]
     assert row['frigate_event_id'] == '1.1-a'
 
 def test_load_session_roundtrips_event_id(tmp_path):

@@ -55,7 +55,7 @@ async def _camera_healthy():
 
 async def api_status(request):
     cfg = _cfg()
-    last = _tr.load_history(limit=1)
+    last = _tr.load_history(limit=1)['sessions']
     live = _tr.active_session()
     return web.json_response({
         'version': _version(),
@@ -110,7 +110,7 @@ async def api_history_delete(request):
             expected = body['count']
     except Exception:
         pass
-    count = len(_tr.load_history(limit=10 ** 6, offset=0))
+    count = _tr.load_history(limit=10 ** 6, offset=0)['total']
     if expected is not None and expected != count:
         return web.json_response({'error': 'count changed; re-confirm',
                                   'count': count}, status=409)

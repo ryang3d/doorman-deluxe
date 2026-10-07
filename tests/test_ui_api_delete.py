@@ -70,7 +70,7 @@ async def test_delete_session_keeps_other_sessions(client, tmp_path):
 
     assert tr.load_session(drop) is None
     assert tr.load_session(keep) is not None
-    assert [s['session_id'] for s in tr.load_history()] == [keep]
+    assert [s['session_id'] for s in tr.load_history()['sessions']] == [keep]
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_delete_all_removes_everything(client, tmp_path):
         assert r.status == 200
         assert (await r.json()) == {'deleted': 3}
         r2 = await c.get('/api/history')
-        assert (await r2.json()) == []
+        assert (await r2.json()) == {'sessions': [], 'total': 0}
 
 
 @pytest.mark.asyncio
@@ -106,7 +106,7 @@ async def test_delete_all_count_mismatch_409(client, tmp_path):
         assert r.status == 409
         assert (await r.json()) == {'error': 'count changed; re-confirm', 'count': 1}
 
-    assert len(tr.load_history()) == 1
+    assert tr.load_history()['total'] == 1
 
 
 @pytest.mark.asyncio
