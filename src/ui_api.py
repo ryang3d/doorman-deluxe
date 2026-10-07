@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/sessions/{id}   full session (transcript + metadata)
   DELETE /api/sessions/{id} delete one completed session (+ its snapshot)
   POST /api/sessions/{id}/export   zip of the session (parts=transcript,clip,snapshot)
+  POST /api/sessions/export-all  zip of every persisted session (parts=..., limit=...)
   DELETE /api/history       delete all sessions (+ their snapshots)
   GET  /api/live            the in-progress session, if any
   GET  /api/snapshot/{id}   per-session snapshot image
@@ -279,6 +280,52 @@ async def api_session_export(request):
                  'attachment; filename="doorman-' + sid + '.zip"'})
 
 
+async def api_sessions_export_all(request):
+    """POST /api/sessions/export-all?parts=...&limit=10000[&ids=a,b,c]
+    -> one zip, one directory per session. 404 when (the filtered) history is
+    empty. When ids= is present the export is restricted to those session ids
+    (multi-select export from the UI); unknown ids are ignored. Without ids=
+    every persisted session (up to limit) is exported."""
+    include, err = _parse_export_parts(request.query.get('parts', 'transcript'))
+    if err is not None:
+        return err
+    try:
+        limit = int(request.query.get('limit', '10000'))
+    except ValueError:
+        return web.json_response({'error': 'bad limit'}, status=400)
+    only_ids = None
+    ids_raw = request.query.get('ids', '').strip()
+    if ids_raw:
+        only_ids = {s for s in ids_raw.split(',') if s}
+    # load_history returns a dict {'sessions': [...], 'total': N} (pagination
+    # refactor) — pull the session list out.
+    rows = _tr.load_history(limit=limit, offset=0)['sessions']
+    if only_ids is not None:
+        rows = [r for r in rows if r['session_id'] in only_ids]
+    if not rows:
+        return web.json_response({'error': 'no sessions to export'}, status=404)
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for row in rows:
+            s = _tr.load_session(row['session_id'])
+            if not s:
+                continue
+            clip = await _resolve_clip(row['session_id']) if 'clip' in include else None
+            data, _parts = _build_session_zip(s, include, clip=clip)
+            inner = zipfile.ZipFile(io.BytesIO(data))
+            for item in inner.namelist():
+                z.writestr(row['session_id'] + '/' + item, inner.read(item))
+    import time
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    suffix = '' if only_ids is None else '-selected'
+    return web.Response(
+        body=buf.getvalue(), content_type='application/zip',
+        headers={'Content-Disposition':
+                 'attachment; filename="doorman-history' + suffix + '-' + stamp + '.zip"'})
+
+
 async def api_session_export_method_not_allowed(request):
     # GET on .../export -> explicit 405 (router answers it for us; this
     # documents intent) — no code needed beyond registration:
@@ -507,6 +554,7 @@ def build_app():
     app.router.add_delete('/api/sessions/{id}', api_session_delete)
     app.router.add_post('/api/sessions/{id}/export', api_session_export)
     app.router.add_get('/api/sessions/{id}/export', api_session_export_method_not_allowed)
+    app.router.add_post('/api/sessions/export-all', api_sessions_export_all)
     app.router.add_delete('/api/history', api_history_delete)
     app.router.add_get('/api/live', api_live)
     app.router.add_get('/api/snapshot/{id}', api_snapshot)

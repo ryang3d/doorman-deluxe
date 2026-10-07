@@ -150,3 +150,71 @@ async def test_post_export_id_is_not_import_route(client, tmp_path):
     async with await client as c:
         r = await c.post('/api/sessions/import/export?parts=transcript')
         assert r.status == 404
+
+
+@pytest.mark.asyncio
+async def test_export_all_two_sessions(client, tmp_path, monkeypatch):
+    sid_a = _finished(tmp_path, snapshot=True, event_id='ev-a')
+    sid_b = _finished(tmp_path, snapshot=False, event_id=None)
+    _stub_clip(monkeypatch, sid_a, 'ev-a')
+
+    async def fake_resolve_all(s_):
+        return {'event_id': 'ev-a', 'clip_url': 'http://x/clip.mp4',
+                'match': 'exact'} if s_ == sid_a else None
+    monkeypatch.setattr(fc, 'resolve_event_id', fake_resolve_all)
+
+    async with await client as c:
+        r = await c.post('/api/sessions/export-all?parts=transcript,snapshot,clip')
+        assert r.status == 200
+        z = _zip(await r.read())
+        expected = sorted(
+            [sid_a + '/' + sid_a + '.transcript.txt',
+             sid_a + '/' + sid_a + '.session.json',
+             sid_a + '/snapshot.jpg',
+             sid_a + '/clip.mp4',
+             sid_b + '/' + sid_b + '.transcript.txt',
+             sid_b + '/' + sid_b + '.session.json'])
+        assert sorted(z.namelist()) == expected
+
+
+@pytest.mark.asyncio
+async def test_export_all_empty_history_404(client):
+    async with await client as c:
+        r = await c.post('/api/sessions/export-all?parts=transcript')
+        assert r.status == 404
+
+
+@pytest.mark.asyncio
+async def test_export_all_unknown_part_400(client, tmp_path):
+    _finished(tmp_path, snapshot=False)
+    async with await client as c:
+        r = await c.post('/api/sessions/export-all?parts=bogus')
+        assert r.status == 400
+
+
+@pytest.mark.asyncio
+async def test_export_all_ids_filters(client, tmp_path):
+    # ids= restricts the export to a subset of session ids (multi-select export)
+    sid_a = _finished(tmp_path, snapshot=False)
+    sid_b = _finished(tmp_path, snapshot=False)
+    async with await client as c:
+        r = await c.post('/api/sessions/export-all?parts=transcript&ids=' + sid_a)
+        assert r.status == 200
+        z = _zip(await r.read())
+        assert sorted(z.namelist()) == [sid_a + '/' + sid_a + '.session.json',
+                                        sid_a + '/' + sid_a + '.transcript.txt']
+        # multiple ids, comma-separated; order-preserving, unknown ids ignored
+        r2 = await c.post('/api/sessions/export-all?parts=transcript&ids='
+                          + sid_b + ',nope,' + sid_a)
+        assert r2.status == 200
+        z2 = _zip(await r2.read())
+        top = {n.split('/')[0] for n in z2.namelist()}
+        assert top == {sid_a, sid_b}
+
+
+@pytest.mark.asyncio
+async def test_export_all_ids_empty_404(client, tmp_path):
+    _finished(tmp_path, snapshot=False)
+    async with await client as c:
+        r = await c.post('/api/sessions/export-all?parts=transcript&ids=nope')
+        assert r.status == 404
