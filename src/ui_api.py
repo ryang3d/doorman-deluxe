@@ -345,6 +345,11 @@ async def api_sessions_import(request):
     try:
         # NOTE: request.post is a *method* — capture its dict result.
         post = await request.post()
+    except web.HTTPRequestEntityTooLarge:
+        # A realistic export zip (transcript + snapshot + a real Frigate clip)
+        # is routinely 2-5 MB; the default 1 MB client_max_size would reject
+        # it. build_app() raises the cap; surface a clear 413 if exceeded.
+        return web.json_response({'error': 'upload too large'}, status=413)
     except Exception:
         return web.json_response({'error': 'expected multipart form'}, status=400)
     file_field = post.get('file')
@@ -372,6 +377,7 @@ async def api_sessions_import(request):
         # prefer records flagged as doorman sessions; deterministic order
         candidates.sort(key=lambda p: (0 if _looks_doorman(p) else 1, p))
         session_dicts, warnings = [], []
+        seen = set()
         for path in candidates:
             try:
                 o = json.loads(open(path, encoding='utf-8').read())
@@ -383,6 +389,11 @@ async def api_sessions_import(request):
                 warnings.append('skipped ' + os.path.basename(path)
                                 + ' (missing session_id or messages)')
                 continue
+            if sid in seen:
+                warnings.append('duplicate session_id ' + sid
+                                + ' in zip; keeping first occurrence')
+                continue
+            seen.add(sid)
             session_dir = os.path.dirname(path)
             snap_src = os.path.join(session_dir, 'snapshot.jpg')
             if os.path.exists(snap_src):
@@ -635,7 +646,7 @@ async def api_prompts_preview(request):
 
 # --------------------------------------------------------------- app
 def build_app():
-    app = web.Application()
+    app = web.Application(client_max_size=64 * 1024 * 1024)   # 64 MB import cap
     app.router.add_get('/api/status', api_status)
     app.router.add_get('/api/history', api_history)
     app.router.add_get('/api/sessions/{id}', api_session)
