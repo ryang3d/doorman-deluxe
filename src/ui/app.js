@@ -311,12 +311,10 @@ async function loadAllPage(reset) {
     const d = await apiGet('/api/history?limit=' + HIST_ALL_BATCH + '&offset=' + histState.allLoaded);
     histState.total = d.total;
     const list = $('.hist-list', view) || view;
-    const empty = $('.hist-empty', view);
-    if (empty) empty.remove();
     for (const sum of d.sessions) list.append(histItem(sum));
     histState.allLoaded += d.sessions.length;
     if (!histState.allLoaded && reset) {
-      view.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
+      list.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
     }
     updateHistPager();
     if (histState.allLoaded >= histState.total) {
@@ -330,7 +328,10 @@ async function loadAllPage(reset) {
       more = sentinelInView();
     }
   } catch (e) {
-    view.append(h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
+    // `list` may be undefined if the fetch threw before it was declared, so
+    // resolve it here rather than relying on the try-block binding.
+    ($('.hist-list', view) || view).append(
+      h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
   } finally {
     allLoading = false;
     if (more) loadAllPage(false);
@@ -357,39 +358,43 @@ async function loadHistory() {
     }
     const list = $('.hist-list', view) || view;
     list.replaceChildren();
-    const empty = $('.hist-empty', view);
-    if (empty) empty.remove();
     if (!d.sessions.length) {
-      view.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
+      list.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
     } else {
       for (const sum of d.sessions) list.append(histItem(sum));
     }
     updateHistPager();
   } catch (e) {
-    view.append(h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
+    // `list` may be undefined if the fetch threw before it was declared, so
+    // resolve it here rather than relying on the try-block binding.
+    ($('.hist-list', view) || view).append(
+      h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
   }
 }
 
 function updateHistPager() {
-  const count = $('#hist-count');
-  const prev = $('#hist-prev');
-  const next = $('#hist-next');
-  if (!count) return;
-  if (histState.pageSize === 'all') {
-    // lazy mode: show how many are loaded vs total; arrows don't apply.
-    count.textContent = histState.allLoaded >= histState.total
-      ? histState.total + (histState.total === 1 ? ' session' : ' sessions')
-      : 'showing ' + histState.allLoaded + ' of ' + histState.total + ' sessions';
-    if (prev) prev.disabled = true;
-    if (next) next.disabled = true;
-    return;
+  // Mirror the readout + arrow state on both the top and bottom pager rows.
+  for (const pf of ['top', 'bottom']) {
+    const count = document.getElementById('hist-count-' + pf);
+    if (!count) continue;
+    const prev = document.getElementById('hist-prev-' + pf);
+    const next = document.getElementById('hist-next-' + pf);
+    if (histState.pageSize === 'all') {
+      // lazy mode: show how many are loaded vs total; arrows don't apply.
+      count.textContent = histState.allLoaded >= histState.total
+        ? histState.total + (histState.total === 1 ? ' session' : ' sessions')
+        : 'showing ' + histState.allLoaded + ' of ' + histState.total + ' sessions';
+      if (prev) prev.disabled = true;
+      if (next) next.disabled = true;
+      continue;
+    }
+    const pages = Math.max(1, Math.ceil(histState.total / histState.pageSize));
+    const p = Math.min(histState.page, pages);
+    count.textContent = 'Page ' + p + ' of ' + pages + ' · ' + histState.total +
+      (histState.total === 1 ? ' session' : ' sessions');
+    if (prev) prev.disabled = p <= 1;
+    if (next) next.disabled = p >= pages;
   }
-  const pages = Math.max(1, Math.ceil(histState.total / histState.pageSize));
-  const p = Math.min(histState.page, pages);
-  count.textContent = 'Page ' + p + ' of ' + pages + ' · ' + histState.total +
-    (histState.total === 1 ? ' session' : ' sessions');
-  if (prev) prev.disabled = p <= 1;
-  if (next) next.disabled = p >= pages;
 }
 
 function setupHistObserver() {
@@ -397,7 +402,10 @@ function setupHistObserver() {
   let sent = $('.hist-sentinel', view);
   if (!sent) {
     sent = h('div', { class: 'hist-sentinel', text: 'Loading…' });
-    view.append(sent);
+    // keep the sentinel above the bottom pager row so it stays the last thing
+    // the user scrolls to (the bottom row is the final child of `view`).
+    const bottom = view.lastElementChild;
+    view.insertBefore(sent, bottom || null);
   }
   // rootMargin pre-fetches the next batch ~400px before the sentinel reaches
   // the viewport, so the list feels continuous instead of stalling.
@@ -409,13 +417,22 @@ function setupHistObserver() {
   histObserver.observe(sent);
 }
 
-function histPagerRow() {
+// Keep every page-size <select> in the DOM showing the current choice (there
+// are two: top and bottom of the list).
+function syncPageSizeSelects() {
+  $$('.page-size', view).forEach(sel => { sel.value = String(histState.pageSize); });
+}
+
+// One pager row. `pf` ('top' | 'bottom') namespaces the element ids so both
+// rows can be updated independently by updateHistPager().
+function histPagerRow(pf) {
   const sel = h('select', { class: 'page-size', title: 'Sessions per page' },
     HIST_PAGE_SIZES.map(v => h('option', { value: String(v), text: v === 'all' ? 'All' : String(v) })));
   sel.value = String(histState.pageSize);
   sel.addEventListener('change', () => {
     histState.pageSize = sel.value === 'all' ? 'all' : Number(sel.value);
     saveHistPageSize(histState.pageSize);
+    syncPageSizeSelects();   // keep the top/bottom selects in agreement
     histState.page = 1;   // changing page size always returns to page 1
     histState.allLoaded = 0;
     const list = $('.hist-list', view);
@@ -435,15 +452,15 @@ function histPagerRow() {
     h('span', { class: 'hint', text: 'Per page' }),
     sel,
     h('div', { class: 'spacer' }),
-    h('button', { class: 'page-btn', id: 'hist-prev', onclick: () => {
+    h('button', { class: 'page-btn', id: 'hist-prev-' + pf, onclick: () => {
       if (histState.pageSize !== 'all' && histState.page > 1) { histState.page--; loadHistory(); }
     } }, '← Prev'),
-    h('button', { class: 'page-btn', id: 'hist-next', onclick: () => {
+    h('button', { class: 'page-btn', id: 'hist-next-' + pf, onclick: () => {
       if (histState.pageSize === 'all') return;
       const pages = Math.max(1, Math.ceil(histState.total / histState.pageSize));
       if (histState.page < pages) { histState.page++; loadHistory(); }
     } }, 'Next →'),
-    h('span', { class: 'page-count', id: 'hist-count', text: '…' }),
+    h('span', { class: 'page-count', id: 'hist-count-' + pf, text: '…' }),
   );
 }
 
@@ -452,8 +469,11 @@ function renderHistory() {
   view.replaceChildren(
     h('div', { class: 'section-title' }, 'Visit history',
       h('button', { class: 'clear-all', onclick: clearAllHistory, text: 'Clear all' })),
-    histPagerRow(),
-    h('div', { class: 'hist-list' }));
+    histPagerRow('top'),
+    h('div', { class: 'hist-list' }),
+    // a second pager row at the bottom of the list mirrors the top one, so
+    // long lists don't require scrolling back up to change page/size.
+    histPagerRow('bottom'));
   if (histState.pageSize === 'all') {
     setupHistObserver();
     loadAllPage(true);
