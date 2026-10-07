@@ -164,11 +164,37 @@ FIELDS = [
 ]
 
 
+# Rarely-touched tuning fields, hidden behind a per-section 'Show advanced'
+# toggle in the Web UI. These are all local-engine / LLM knobs and mic
+# endpointing params: important when you're tuning, noise otherwise.
+ADVANCED_KEYS = {
+    'DOORMAN_LLM_TEMPERATURE',
+    'DOORMAN_LLM_MAX_TOKENS',
+    'DOORMAN_LLM_THINK',
+    'DOORMAN_LOCAL_STT_MAX_NSP',
+    'DOORMAN_LOCAL_MIC_GAIN',
+    'DOORMAN_LOCAL_MIC_LIMITER',
+    'DOORMAN_LOCAL_VAD_AGGRESSIVENESS',
+    'DOORMAN_LOCAL_MIN_RMS',
+    'DOORMAN_LOCAL_SILENCE_MS',
+    'DOORMAN_LOCAL_MIN_SPEECH_MS',
+    'DOORMAN_LOCAL_MAX_RING_MS',
+    'DOORMAN_KEEP_WARM_SETTLE_S',
+    'DOORMAN_KEEP_WARM_INTERVAL_S',
+}
+
+
 def field_map():
-    """{key: spec-dict} for programmatic access."""
+    """{key: spec-dict} for programmatic access.
+
+    'advanced' marks rarely-touched tuning fields (the UI hides them behind a
+    per-section 'Show advanced' toggle). Kept out of the FIELDS tuple so the
+    tuple arity stays 9 and positional access is untouched.
+    """
+    adv = ADVANCED_KEYS
     return {k: {'key': k, 'label': l, 'group': g, 'type': t,
                 'restart_required': rr, 'secret': s, 'options': o,
-                'default': d, 'help': h}
+                'default': d, 'help': h, 'advanced': k in adv}
             for (k, l, g, t, rr, s, o, d, h) in FIELDS}
 
 

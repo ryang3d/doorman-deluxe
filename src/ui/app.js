@@ -641,6 +641,9 @@ let promptsState = null;   // {key: {spec, input, dirty}}
 // Save (and on route entry), which would otherwise reset every <details> to
 // collapsed. Remembering the open set keeps the user's place across that.
 const openSections = new Set();
+// Per-section 'Show advanced' toggles the user has opened, so a re-render
+// keeps the tuning fields visible for sections they've expanded.
+const advancedShown = new Set();
 
 function buildSettings() {
   const fields = settingsCache ? Object.values(settingsCache) : [];
@@ -683,14 +686,33 @@ function buildSettings() {
   root.append(jumpNav);
 
   for (const [gname, specs] of Object.entries(groups)) {
+    const normal = specs.filter(s => !s.advanced);
+    const adv = specs.filter(s => s.advanced);
+    const body = h('div', { class: 'rows' });
+    for (const spec of normal) body.append(settingRow(spec));
+    if (adv.length) {
+      // Rarely-touched tuning fields live behind a per-section toggle so the
+      // section stays short by default. Remembers its open state across the
+      // re-render buildSettings() does on Save (advancedShown, like openSections).
+      const advDetails = h('details', { class: 'advanced' },
+        h('summary', { text: 'Show advanced (' + adv.length + ')' }),
+        h('div', { class: 'rows adv-rows' }));
+      const advRows = $('.adv-rows', advDetails);
+      for (const spec of adv) advRows.append(settingRow(spec));
+      advDetails.open = advancedShown.has(gname);
+      advDetails.addEventListener('toggle', () => {
+        advDetails.querySelector('summary').textContent =
+          (advDetails.open ? 'Hide advanced (' : 'Show advanced (') + adv.length + ')';
+        if (advDetails.open) advancedShown.add(gname); else advancedShown.delete(gname);
+      });
+      body.append(advDetails);
+    }
     const dl = h('details', {
       class: 'group',
       id: 'sec-' + gname.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     },
       h('summary', { text: gname }),
-      h('div', { class: 'rows' }));
-    const rows = $('.rows', dl);
-    for (const spec of specs) rows.append(settingRow(spec));
+      body);
     dl.open = openSections.has(gname);
     dl.addEventListener('toggle', () => {
       if (dl.open) openSections.add(gname); else openSections.delete(gname);
@@ -702,30 +724,38 @@ function buildSettings() {
   updateDirtyHint();
 
   // Live search: hide non-matching rows, auto-open sections that have hits.
-  // An empty query restores the full list (every row re-shown).
+  // A search bypasses the advanced toggle so a tuning field is still findable;
+  // clearing the query restores each section's remembered open state.
   function applySettingsFilter() {
     const q = (searchInput.value || '').trim();
     let total = 0, matched = 0;
     $$('details.group', root).forEach(sec => {
+      const gname = sec.querySelector('summary').textContent;
+      const advDetails = sec.querySelector('details.advanced');
+      const advOpen = advancedShown.has(gname);
       let secMatch = 0;
       $$('.row', sec).forEach(row => {
         total += 1;
         const key = row.dataset.key;
         const spec = settingsCache ? settingsCache[key] : null;
+        const isAdv = !!(spec && spec.advanced);
         const hit = fieldMatchesQuery(spec || { label: key, key: key, help: '' }, q);
-        row.hidden = !hit;
-        if (hit) secMatch += 1;
+        const visible = q ? hit : (isAdv ? advOpen : true);
+        row.hidden = !visible;
+        if (visible) { secMatch += 1; matched += 1; }
       });
-      matched += secMatch;
-      if (q) sec.open = secMatch > 0;   // while searching, only matching sections stay open
-    });
-    if (!q) {
-      // Query cleared: restore each section to the user's remembered open state.
-      $$('details.group', root).forEach(sec => {
-        const gname = sec.querySelector('summary').textContent;
+      if (q) {
+        sec.open = secMatch > 0;   // while searching, only matching sections stay open
+        if (advDetails) {          // surface matching advanced rows
+          const advHit = $$('.row', advDetails).some(r => !r.hidden);
+          advDetails.open = advHit;
+        }
+      } else {
+        // Query cleared: restore the user's remembered open state.
         sec.open = openSections.has(gname);
-      });
-    }
+        if (advDetails) advDetails.open = advOpen;
+      }
+    });
     searchCount.hidden = !q;
     searchCount.textContent = q ? matched + ' of ' + total + ' settings' : '';
   }
