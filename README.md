@@ -209,12 +209,20 @@ An in-container web UI (aiohttp, no build step, offline) ships with the service:
 
 - **Reach it** at `http://<doorman-host>:8090` (the service uses `network_mode: host`, so the bind port is directly reachable). No auth - trusted LAN only. Disable with `DOORMAN_UI_ENABLED=false` (voice service only) or move it with `DOORMAN_UI_PORT`.
 - **Tabs:** Dashboard (camera health, engine, trigger, last visit, live "in a conversation" indicator + live transcript), History (visits with snapshot thumbnails, click through to the transcript), Settings (all keys, grouped, with hot/restart badges).
-- **Settings model.** Saving writes `.env`. Keys are either *hot* (re-read at the point of use, so the change takes effect on the next interaction without a restart) or *restart-required* (frozen into the process at start). The form flags each, and when a restart is needed it offers **Restart to apply**, which re-execs the process in place (same container - no recreate). `.env` is the source of truth both ways: a key present in the file wins, and a key removed from the file is dropped on the next start.
+- **Settings model.** Saving writes `.env`. Keys are either *hot* (re-read at the point of use, so the change takes effect on the next interaction without a restart) or *restart-required* (frozen into the process at start). The form flags each, and when a restart is needed it offers **Restart to apply**, which re-execs the process in place (same container - no recreate). `.env` is the source of truth both ways: a key present in the file wins, and a key removed from the file is dropped on the next start. The settings pane is master-detail: a section list on the left, the fields on the right. A live **search** box filters fields and jump-navigates to matching sections (zero-match sections dim; the active section jumps to the first match), and each section has a **Show advanced** toggle for its tuning fields.
 - **Transcripts** are recorded from both voice engines (the same spots that log `[visitor said]` / `[doorman said]` / `[tool call]`), stored as `sessions.jsonl` under `DOORMAN_DATA_DIR` (the `doorman_data` volume in docker, mounted `/data`), with a per-visit snapshot alongside.
 - **Video clips:** the session detail view plays the matching Frigate clip
   (the event that triggered the interaction; falls back to the closest
   overlapping front-door event with a clip). The clip endpoint proxies the
   clip; nothing is stored locally.
+- **History** is paginated (5/10/25/50/100 per page, or *All* which lazy-loads
+  on scroll); each visit has a **Delete** button (per-visit transcript +
+  snapshot) and the header has **Clear all** - both confirm before removing.
+- **Export / import:** export a single visit, a checked subset, or the whole
+  history to a zip, choosing which parts to include (transcript text, snapshot,
+  Frigate clip) via checkboxes; re-import a zip to restore it (e.g. for backup
+  or moving to a new box). Importing reports which parts landed and warns on
+  the clip (saved locally, not yet linked into the detail view).
 - **Prompts tab:** view and edit all of Doorman's prompt texts (main system prompt, animal-greeting prompt, the cat + dog one-liner greeting pools, the generic animal fallback line, the session trigger/prime line, and the local-engine notes). Values persist to `/data/prompts.json`; edits apply on the next interaction (no restart). A live preview shows the rendered main prompt for a recognized vs unknown visitor.
 
 New `.env` keys: `DOORMAN_UI_PORT` (default `8090`), `DOORMAN_UI_ENABLED` (default `true`), `DOORMAN_DATA_DIR` (default `/data`). The data dir also holds `prompts.json` — user overrides for the Prompts tab (see above); any key absent from the file falls back to the built-in default.
@@ -283,8 +291,8 @@ A living list of features being worked on, roughly ordered by priority and group
 - [x] **Web UI / control panel** - manage all settings in the browser instead of editing `.env`, with an interaction history (per-visit transcript + snapshot + recognized name) and a status/health view. **Done** - see the "Web UI" section above.
 - [ ] **HA watchdog + down alert** - a health entity that alerts the moment Doorman is wedged.
 - [ ] **Local recording of interactions** - privacy-gated, off by default.
-- [ ] **Export / import** - export a session's conversation transcript and video to a zip file, and re-import the same for backup or migration.
-- [ ] **History management** - delete a single recorded interaction or clear all of them, with a confirmation warning before anything is removed.
+- [x] **Export / import** - export a single visit, a checked subset, or the whole history to a zip (choose transcript / snapshot / clip via checkboxes), and re-import the same for backup or migration. **Done** - see the "Web UI" section above; `POST /api/sessions/{id}/export`, `POST /api/sessions/export-all`, `POST /api/sessions/import`.
+- [x] **History management** - delete a single recorded interaction or clear all of them, with a confirmation warning before anything is removed. **Done** - per-visit Delete + header Clear all in the Web UI; `DELETE /api/sessions/{id}`, `DELETE /api/history`.
 - [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
 
 ## License
