@@ -487,9 +487,18 @@ function histPagerRow(pf) {
 
 function renderHistory() {
   histState = { page: 1, pageSize: loadHistPageSize(), total: 0, allLoaded: 0 };
+  exportSelection.clear();   // start a fresh history view with nothing selected
+  for (const k of Object.keys(histRegistry)) delete histRegistry[k];
   view.replaceChildren(
     h('div', { class: 'section-title' }, 'Visit history',
-      h('button', { class: 'clear-all', onclick: clearAllHistory, text: 'Clear all' })),
+      h('span', { class: 'hist-toolbar' },
+        h('button', { class: 'clear-all', id: 'export-selected-btn',
+                      onclick: () => exportSelectedFromToolbar(),
+                      text: 'Export selected', disabled: true }),
+        h('button', { class: 'clear-all', id: 'export-all-btn',
+                      onclick: () => exportAllFromToolbar(), text: 'Export all' }),
+        h('button', { class: 'clear-all', onclick: doImport, text: 'Import' }),
+        h('button', { class: 'clear-all', onclick: clearAllHistory, text: 'Clear all' }))),
     histPagerRow('top'),
     h('div', { class: 'hist-list' }),
     // a second pager row at the bottom of the list mirrors the top one, so

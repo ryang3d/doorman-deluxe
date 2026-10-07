@@ -512,3 +512,7 @@ a.clip-dl:hover { text-decoration: underline; }
 .hist-item .row-actions { display: flex; gap: 6px; align-items: center; justify-self: end; }
 .detail .head .del-btn { margin-left: 0; }
 .detail .head .del-btn:first-of-type { margin-left: auto; }
+
+.hist-toolbar { float: right; display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; }
+.hist-toolbar .clear-all { float: none; }
+.hist-toolbar .clear-all:disabled { opacity: .45; cursor: not-allowed; }
