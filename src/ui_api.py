@@ -86,7 +86,8 @@ async def api_history(request):
             return web.json_response({'error': 'bad limit/offset'}, status=400)
     except ValueError:
         return web.json_response({'error': 'bad limit/offset'}, status=400)
-    d = _tr.load_history(limit=10 ** 9 if limit is None else limit, offset=offset)
+    d = await _tr.load_history_async(limit=10 ** 9 if limit is None else limit,
+                                     offset=offset)
     return web.json_response(d)
 
 

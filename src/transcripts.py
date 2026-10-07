@@ -130,6 +130,25 @@ def load_history(limit=50, offset=0):
     rows = _history_rows()
     return {'sessions': rows[offset:offset + limit], 'total': len(rows)}
 
+async def load_history_async(limit=50, offset=0):
+    """load_history + a has_clip flag per row (Frigate probe, best-effort).
+    The clip flag is advisory UI metadata; it must never fail the listing.
+    Returns the SAME dict shape as load_history: {'sessions': [...], 'total': N}
+    (the pagination refactor changed load_history to return a dict, not a list —
+    keep that contract so /api/history and its callers are unaffected)."""
+    import frigate_clips as _clips
+    d = load_history(limit=limit, offset=offset)
+    for r in d['sessions']:
+        ev = r.get('frigate_event_id')
+        if not ev:
+            r['has_clip'] = False
+            continue
+        try:
+            r['has_clip'] = await _clips.get_event_has_clip(ev)
+        except Exception:
+            r['has_clip'] = False
+    return d
+
 def load_session(session_id):
     p = _jsonl_path()
     if not os.path.exists(p):
