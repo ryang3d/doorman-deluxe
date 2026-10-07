@@ -1092,6 +1092,218 @@ async function pSave() {
   } finally { btn.disabled = false; }
 }
 
+// ---------------------------------------------------------------- export / import
+// The export modal is shared: a single session (from a history row or the
+// detail view) and "Export all" (from the history toolbar) both open it with
+// their own `count` / per-part availability numbers. Import is a second mode
+// of the same modal (file picker + overwrite).
+function exportModal(opts) {
+  // opts: { title, note, count, parts: {transcript, snapshot, clip} }
+  // parts[key] === null means "availability not checked" (single-session
+  // modal): the note column is omitted. A number means "N of count".
+  const overlay = h('div', { class: 'overlay' });
+  const body = [];
+  for (const key of ['transcript', 'snapshot', 'clip']) {
+    const avail = key === 'transcript' ? opts.count : opts.parts[key];
+    const label = key === 'transcript' ? 'Transcript text' :
+                  key === 'snapshot' ? 'Snapshot' : 'Video clip (Frigate)';
+    const note = key === 'transcript' ? '' :
+      (avail === null ? '' : avail + ' of ' + opts.count + ' available');
+    body.push(h('label', { class: 'opt' },
+      h('input', { type: 'checkbox', checked: 'true', 'data-part': key }),
+      h('span', { text: label }),
+      h('span', { class: 'n', text: note })));
+  }
+  if (opts.mode === 'import') body.length = 0;
+  const box = h('div', { class: 'modal' },
+    h('div', { class: 'modal-title', text: opts.mode === 'import' ? 'Import history' : opts.title }),
+    h('div', { class: 'modal-note', text: opts.mode === 'import'
+      ? 'Upload a zip previously exported from Doorman. Transcript is required; snapshot and clip are included if present.'
+      : 'Only parts that exist for a session are included. Clips are fetched from Frigate at export time.' }),
+    opts.mode === 'import'
+      ? h('div', {},
+          h('input', { type: 'file', accept: '.zip' }),
+          h('label', { class: 'opt' },
+            h('input', { type: 'checkbox' }),
+            h('span', { text: 'Overwrite sessions that already exist' })))
+      : h('div', { class: 'modal-opts' }, ...body),
+    h('div', { class: 'modal-foot' },
+      h('button', { class: 'btn ghost sm', onclick: () => overlay.remove(), text: 'Cancel' }),
+      h('button', { class: 'btn sm', text: opts.mode === 'import' ? 'Import' : 'Export',
+        onclick: () => opts.onConfirm(overlay) })));
+  overlay.append(box);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  document.body.append(overlay);
+  return overlay;
+}
+
+let exportSelection = new Set();   // session ids checked on the history rows
+const histRegistry = {};           // session_id -> row summary (for availability math)
+
+// Shared: save a Response body as a named .zip; cleans up the object URL.
+async function saveZip(res, filename) {
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return blob;
+}
+
+// Which part checkboxes in the open modal are on? -> 'transcript,clip,snippet'
+function checkedParts(overlay) {
+  return $$('.opt input', overlay)
+    .filter(i => i.checked)
+    .map(i => i.dataset.part)
+    .join(',');
+}
+
+// Per-part availability across the currently-checked rows (for the selected modal).
+function selectedAvail() {
+  let count = 0, snapshot = 0, clip = 0;
+  for (const id of exportSelection) {
+    const s = histRegistry[id];
+    if (!s) continue;
+    count++;
+    if (s.has_snapshot) snapshot++;
+    if (s.has_clip) clip++;
+  }
+  return { count, snapshot, clip };
+}
+
+// Keep the toolbar's "Export selected (N)" label + enabled state in sync.
+function updateExportSelectedBtn() {
+  const btn = $('#export-selected-btn');
+  if (!btn) return;
+  const n = exportSelection.size;
+  btn.textContent = 'Export selected' + (n ? ' (' + n + ')' : '');
+  btn.disabled = n === 0;
+}
+
+async function doExportSession(id) {
+  // single session: open the modal, all three parts checked. No per-session
+  // availability pre-probe (one extra request per row would be wasteful);
+  // unavailable parts are simply absent from the zip and the toast says what
+  // was requested.
+  exportModal({
+    mode: 'export',
+    title: 'Export this session',
+    count: 1,
+    parts: { snapshot: null, clip: null },
+    onConfirm: async (overlay) => {
+      const parts = checkedParts(overlay);
+      if (!parts) { toast('Pick at least one part.', 'err'); return; }
+      overlay.remove();
+      try {
+        const res = await fetch('/api/sessions/' + encodeURIComponent(id) + '/export?parts=' + encodeURIComponent(parts));
+        if (res.status === 409) { toast('This session is live right now; export it after it ends.', 'err'); return; }
+        if (!res.ok) {
+          let msg = 'HTTP ' + res.status;
+          try { msg = (await res.json()).error || msg; } catch (e) {}
+          throw new Error(msg);
+        }
+        await saveZip(res, 'doorman-' + id + '.zip');
+        toast('Exported ' + parts + '.', 'ok');
+      } catch (e) {
+        toast('Export failed: ' + e.message, 'err');
+      }
+    },
+  });
+}
+
+async function doExportBulk(title, available, ids) {
+  // One zip of many sessions. available: {count, snapshot, clip}.
+  // ids: array of session ids, or null/undefined for the whole history.
+  exportModal({
+    mode: 'export',
+    title,
+    count: available.count,
+    parts: { snapshot: available.snapshot, clip: available.clip },
+    onConfirm: async (overlay) => {
+      const parts = checkedParts(overlay);
+      if (!parts) { toast('Pick at least one part.', 'err'); return; }
+      const q = new URLSearchParams({ parts, limit: '10000' });
+      if (ids && ids.length) q.set('ids', ids.join(','));
+      overlay.remove();
+      const btn = ids ? $('#export-selected-btn') : $('#export-all-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Exporting…'; }
+      try {
+        const res = await fetch('/api/sessions/export-all?' + q.toString());
+        if (!res.ok) {
+          let msg = 'HTTP ' + res.status;
+          try { msg = (await res.json()).error || msg; } catch (e) {}
+          throw new Error(msg);
+        }
+        const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        await saveZip(res, 'doorman-history' + (ids ? '-selected-' : '-') + stamp + '.zip');
+        toast('Exported ' + available.count + ' session' + (available.count === 1 ? '' : 's') + ' (' + parts + ').', 'ok');
+      } catch (e) {
+        toast('Export failed: ' + e.message, 'err');
+      } finally {
+        if (btn) { btn.disabled = false; updateExportSelectedBtn(); }
+      }
+    },
+  });
+}
+
+function exportAllFromToolbar() {
+  // availability computed from a fresh full history fetch (has_snapshot/has_clip).
+  // /api/history returns {sessions: [...], total: N} (pagination refactor).
+  apiGet('/api/history?limit=all&offset=0')
+    .then(d => {
+      const all = d.sessions;
+      if (!all.length) { toast('Nothing to export.', 'ok'); return; }
+      doExportBulk('Export all history (' + all.length + ' sessions)',
+        { count: all.length,
+          snapshot: all.filter(x => x.has_snapshot).length,
+          clip: all.filter(x => x.has_clip).length },
+        null);
+    })
+    .catch(e => toast('History unavailable: ' + e.message, 'err'));
+}
+
+function exportSelectedFromToolbar() {
+  if (!exportSelection.size) { toast('Check one or more rows first.', 'err'); return; }
+  doExportBulk('Export selected sessions',
+    selectedAvail(),
+    Array.from(exportSelection));
+}
+
+async function doImport() {
+  exportModal({
+    mode: 'import',
+    title: 'Import history',
+    note: '',
+    count: 0,
+    parts: {},
+    onConfirm: async (overlay) => {
+      const input = $('input[type=file]', overlay);
+      if (!input || !input.files || !input.files.length) { toast('Choose a .zip file first.', 'err'); return; }
+      const overwrite = $('input[type=checkbox]', overlay).checked;
+      const form = new FormData();
+      form.append('file', input.files[0]);
+      if (overwrite) form.append('overwrite', 'true');
+      try {
+        const res = await fetch('/api/sessions/import', { method: 'POST', body: form });
+        const j = await res.json();
+        if (res.status === 409) {
+          toast('Already exists: ' + (j.conflicts || []).join(', ') + '. Re-open with "overwrite".', 'err');
+          return;
+        }
+        if (!res.ok) throw new Error(j.error || 'HTTP ' + res.status);
+        overlay.remove();
+        let msg = 'Imported ' + j.imported.length + ' session' + (j.imported.length === 1 ? '' : 's') + '.';
+        if (j.warnings && j.warnings.length) msg += ' (' + j.warnings.length + ' note' + (j.warnings.length === 1 ? '' : 's') + ')';
+        toast(msg, 'ok');
+        renderHistory();
+      } catch (e) {
+        toast('Import failed: ' + e.message, 'err');
+      }
+    },
+  });
+}
+
 // ---------------------------------------------------------------- router
 let timers = [];   // active setInterval ids for the current view
 function stopTimers() { timers.forEach(clearInterval); timers = []; }
