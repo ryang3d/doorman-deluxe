@@ -373,3 +373,29 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
 .clip-dl { display: inline-block; font-size: 12px; color: var(--muted); }
 a.clip-dl { color: var(--accent); text-decoration: none; }
 a.clip-dl:hover { text-decoration: underline; }
+
+/* ---------- history pagination ---------- */
+.hist-pager {
+  display: flex; align-items: center; gap: 10px;
+  padding: 2px 0 10px;
+}
+.hist-pager .hint { color: var(--muted); font-size: 12px; }
+.hist-pager .spacer { flex: 1; }
+.hist-pager .page-count { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.page-size {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 8px; font-size: 13px; cursor: pointer;
+}
+.page-size:hover { border-color: var(--accent-dim); }
+.page-btn {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 12px; font-size: 13px; cursor: pointer;
+}
+.page-btn:hover:not(:disabled) { border-color: var(--accent-dim); }
+.page-btn:disabled { opacity: .45; cursor: default; }
+.hist-sentinel {
+  padding: 12px 0; text-align: center;
+  color: var(--muted); font-size: 13px;
+}

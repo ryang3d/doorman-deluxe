@@ -240,7 +240,34 @@ async function renderDashboard() {
 }
 
 // ---------------------------------------------------------------- history
-let histState = { offset: 0, limit: 30 };
+// Page-size options for the history view (sessions per page). 'All' is not a
+// page size but an incremental mode: sessions lazy-load in batches as the
+// user scrolls (the old "Load more" behavior, automatic). The choice
+// persists per browser via localStorage.
+const HIST_PAGE_SIZES = [5, 10, 25, 50, 100, 'all'];
+const HIST_ALL_BATCH = 50;   // rows fetched per scroll-triggered batch in "All"
+let histState = { page: 1, pageSize: 5, total: 0, allLoaded: 0 };
+let histObserver = null;      // IntersectionObserver for the "All" sentinel
+let allLoading = false;       // guard against overlapping "All" batch fetches
+
+function loadHistPageSize() {
+  let v = null;
+  try { v = localStorage.getItem('doorman.histPageSize'); } catch (e) {}
+  if (v === 'all') return 'all';
+  const n = Number(v);
+  return HIST_PAGE_SIZES.includes(n) ? n : 5;
+}
+
+function saveHistPageSize(v) {
+  try { localStorage.setItem('doorman.histPageSize', String(v)); } catch (e) {}
+}
+
+function sentinelInView() {
+  const s = $('.hist-sentinel', view);
+  if (!s) return false;
+  const r = s.getBoundingClientRect();
+  return r.top < window.innerHeight && r.bottom > 0;
+}
 
 function histItem(sum) {
   const who = whoLabel(sum);
@@ -269,52 +296,187 @@ function histItem(sum) {
   return row;
 }
 
-async function loadHistory(reset) {
-  if (reset) histState = { offset: 0, limit: 30 };
+// "All" mode: append the next batch at offset `allLoaded`; reset=true starts
+// at the top of the list.
+async function loadAllPage(reset) {
+  if (allLoading) return;
+  allLoading = true;
+  let more = false;
   try {
-    const items = await apiGet('/api/history?limit=' + histState.limit + '&offset=' + histState.offset);
+    if (reset) {
+      histState.allLoaded = 0;
+      const list = $('.hist-list', view);
+      if (list) list.replaceChildren();
+    }
+    const d = await apiGet('/api/history?limit=' + HIST_ALL_BATCH + '&offset=' + histState.allLoaded);
+    histState.total = d.total;
     const list = $('.hist-list', view) || view;
-    if (reset) list.replaceChildren();   // clear the list only, keep the title + Clear-all button
-    if (!items.length && reset) {
+    const empty = $('.hist-empty', view);
+    if (empty) empty.remove();
+    for (const sum of d.sessions) list.append(histItem(sum));
+    histState.allLoaded += d.sessions.length;
+    if (!histState.allLoaded && reset) {
       view.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
-      return;
     }
-    for (const sum of items) list.append(histItem(sum));
-    histState.offset += items.length;
-    const btn = $('.load-more', view);
-    if (items.length < histState.limit) {
-      if (btn) btn.remove();
-    } else if (!btn) {
-      view.append(h('button', { class: 'load-more', onclick: () => loadHistory(false) }, 'Load more'));
+    updateHistPager();
+    if (histState.allLoaded >= histState.total) {
+      // nothing left to lazy-load: stop observing and drop the sentinel.
+      if (histObserver) { histObserver.disconnect(); histObserver = null; }
+      const sent = $('.hist-sentinel', view);
+      if (sent) sent.remove();
+    } else {
+      // If the sentinel is still on screen (this batch didn't fill the
+      // viewport), immediately fetch the next one so the list keeps filling.
+      more = sentinelInView();
     }
+  } catch (e) {
+    view.append(h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
+  } finally {
+    allLoading = false;
+    if (more) loadAllPage(false);
+  }
+}
+
+// Numbered modes (5/10/25/50/100): replace the list with one page.
+async function loadHistory() {
+  const limit = histState.pageSize;
+  let offset = (histState.page - 1) * limit;
+  try {
+    let d = await apiGet('/api/history?limit=' + limit + '&offset=' + offset);
+    histState.total = d.total;
+    // Clamp forward drift: if the total shrank under us (deletes), don't sit
+    // on a page that no longer exists.
+    const pages = Math.max(1, Math.ceil(histState.total / limit));
+    if (histState.page > pages) {
+      histState.page = pages;
+      offset = (histState.page - 1) * limit;
+      if (offset > 0) {
+        d = await apiGet('/api/history?limit=' + limit + '&offset=' + offset);
+        histState.total = d.total;
+      }
+    }
+    const list = $('.hist-list', view) || view;
+    list.replaceChildren();
+    const empty = $('.hist-empty', view);
+    if (empty) empty.remove();
+    if (!d.sessions.length) {
+      view.append(h('div', { class: 'hist-empty', text: 'No visits recorded yet.' }));
+    } else {
+      for (const sum of d.sessions) list.append(histItem(sum));
+    }
+    updateHistPager();
   } catch (e) {
     view.append(h('div', { class: 'muted-line', text: 'History unavailable: ' + e.message }));
   }
 }
 
+function updateHistPager() {
+  const count = $('#hist-count');
+  const prev = $('#hist-prev');
+  const next = $('#hist-next');
+  if (!count) return;
+  if (histState.pageSize === 'all') {
+    // lazy mode: show how many are loaded vs total; arrows don't apply.
+    count.textContent = histState.allLoaded >= histState.total
+      ? histState.total + (histState.total === 1 ? ' session' : ' sessions')
+      : 'showing ' + histState.allLoaded + ' of ' + histState.total + ' sessions';
+    if (prev) prev.disabled = true;
+    if (next) next.disabled = true;
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(histState.total / histState.pageSize));
+  const p = Math.min(histState.page, pages);
+  count.textContent = 'Page ' + p + ' of ' + pages + ' · ' + histState.total +
+    (histState.total === 1 ? ' session' : ' sessions');
+  if (prev) prev.disabled = p <= 1;
+  if (next) next.disabled = p >= pages;
+}
+
+function setupHistObserver() {
+  if (histObserver) histObserver.disconnect();
+  let sent = $('.hist-sentinel', view);
+  if (!sent) {
+    sent = h('div', { class: 'hist-sentinel', text: 'Loading…' });
+    view.append(sent);
+  }
+  // rootMargin pre-fetches the next batch ~400px before the sentinel reaches
+  // the viewport, so the list feels continuous instead of stalling.
+  histObserver = new IntersectionObserver(entries => {
+    for (const en of entries) {
+      if (en.isIntersecting && histState.pageSize === 'all' && !allLoading) loadAllPage(false);
+    }
+  }, { rootMargin: '400px 0px' });
+  histObserver.observe(sent);
+}
+
+function histPagerRow() {
+  const sel = h('select', { class: 'page-size', title: 'Sessions per page' },
+    HIST_PAGE_SIZES.map(v => h('option', { value: String(v), text: v === 'all' ? 'All' : String(v) })));
+  sel.value = String(histState.pageSize);
+  sel.addEventListener('change', () => {
+    histState.pageSize = sel.value === 'all' ? 'all' : Number(sel.value);
+    saveHistPageSize(histState.pageSize);
+    histState.page = 1;   // changing page size always returns to page 1
+    histState.allLoaded = 0;
+    const list = $('.hist-list', view);
+    if (list) list.replaceChildren();
+    const oldSent = $('.hist-sentinel', view);
+    if (histState.pageSize === 'all') {
+      if (oldSent) oldSent.remove();
+      setupHistObserver();
+      loadAllPage(true);
+    } else {
+      if (histObserver) { histObserver.disconnect(); histObserver = null; }
+      if (oldSent) oldSent.remove();
+      loadHistory();
+    }
+  });
+  return h('div', { class: 'hist-pager' },
+    h('span', { class: 'hint', text: 'Per page' }),
+    sel,
+    h('div', { class: 'spacer' }),
+    h('button', { class: 'page-btn', id: 'hist-prev', onclick: () => {
+      if (histState.pageSize !== 'all' && histState.page > 1) { histState.page--; loadHistory(); }
+    } }, '← Prev'),
+    h('button', { class: 'page-btn', id: 'hist-next', onclick: () => {
+      if (histState.pageSize === 'all') return;
+      const pages = Math.max(1, Math.ceil(histState.total / histState.pageSize));
+      if (histState.page < pages) { histState.page++; loadHistory(); }
+    } }, 'Next →'),
+    h('span', { class: 'page-count', id: 'hist-count', text: '…' }),
+  );
+}
+
 function renderHistory() {
+  histState = { page: 1, pageSize: loadHistPageSize(), total: 0, allLoaded: 0 };
   view.replaceChildren(
     h('div', { class: 'section-title' }, 'Visit history',
       h('button', { class: 'clear-all', onclick: clearAllHistory, text: 'Clear all' })),
+    histPagerRow(),
     h('div', { class: 'hist-list' }));
-  loadHistory(true);
+  if (histState.pageSize === 'all') {
+    setupHistObserver();
+    loadAllPage(true);
+  } else {
+    loadHistory();
+  }
 }
 
 async function clearAllHistory() {
   let all;
   try {
-    all = await apiGet('/api/history?limit=10000&offset=0');
+    all = await apiGet('/api/history?limit=all&offset=0');
   } catch (e) {
     toast('History unavailable: ' + e.message, 'err');
     return;
   }
-  if (!all.length) { toast('Nothing to delete.', 'ok'); return; }
-  if (!confirm('Delete ALL ' + all.length + ' visits?\nTranscripts and snapshots are removed. This cannot be undone.')) return;
+  if (!all.total) { toast('Nothing to delete.', 'ok'); return; }
+  if (!confirm('Delete ALL ' + all.total + ' visits?\nTranscripts and snapshots are removed. This cannot be undone.')) return;
   try {
     const r = await api('/api/history', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ count: all.length }),
+      body: JSON.stringify({ count: all.total }),
     });
     toast('Deleted ' + r.deleted + ' visits.', 'ok');
     renderHistory();
