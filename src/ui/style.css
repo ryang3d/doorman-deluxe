@@ -395,6 +395,8 @@ a.clip-dl:hover { text-decoration: underline; }
 }
 .page-btn:hover:not(:disabled) { border-color: var(--accent-dim); }
 .page-btn:disabled { opacity: .45; cursor: default; }
+/* the bottom row sits right under the last session row; give it clear space */
+.hist-pager.bottom { margin-top: 12px; }
 .hist-sentinel {
   padding: 12px 0; text-align: center;
   color: var(--muted); font-size: 13px;

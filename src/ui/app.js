@@ -448,7 +448,7 @@ function histPagerRow(pf) {
       loadHistory();
     }
   });
-  return h('div', { class: 'hist-pager' },
+  return h('div', { class: 'hist-pager' + (pf === 'bottom' ? ' bottom' : '') },
     h('span', { class: 'hint', text: 'Per page' }),
     sel,
     h('div', { class: 'spacer' }),
