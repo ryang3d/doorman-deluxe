@@ -637,11 +637,23 @@ async function renderLive() {
 let settingsCache = null;   // {key: spec-dict + dirty}
 let settingsInputs = {};    // {key: {input, spec}}
 let promptsState = null;   // {key: {spec, input, dirty}}
+// Sections the user has explicitly opened. buildSettings() re-runs on every
+// Save (and on route entry), which would otherwise reset every <details> to
+// collapsed. Remembering the open set keeps the user's place across that.
+const openSections = new Set();
 
 function buildSettings() {
   const fields = settingsCache ? Object.values(settingsCache) : [];
   const root = h('div', {});
+  const searchInput = h('input', {
+    type: 'search', id: 'settings-search', class: 'settings-search',
+    placeholder: 'Search settings (label, key, or help…)', autocomplete: 'off',
+  });
+  const searchCount = h('span', { id: 'settings-search-count', class: 'settings-search-count' }, '');
+  searchCount.hidden = true;
   const bar = h('div', { class: 'settings-bar' },
+    searchInput,
+    searchCount,
     h('span', { class: 'hint', id: 'dirty-hint', text: 'Changes apply live unless marked “restart”.' }),
     h('button', { class: 'btn ghost', id: 'revert-btn', onclick: revertSettings }, 'Revert'),
     h('button', { class: 'btn ghost', id: 'test-notify-btn', onclick: sendTestNotification }, 'Test notification'),
@@ -652,20 +664,77 @@ function buildSettings() {
   const groups = {};
   for (const spec of fields) (groups[spec.group] = groups[spec.group] || []).push(spec);
 
+  // Jump nav: one chip per group, in section order. Clicking scrolls to the
+  // section and opens it. Order follows `groups` insertion order (first
+  // appearance), which matches the rendered section order exactly.
+  const jumpNav = h('nav', { id: 'settings-jump', class: 'settings-jump' },
+    h('span', { class: 'settings-jump-label', text: 'Jump to:' }));
   for (const [gname, specs] of Object.entries(groups)) {
-    const dl = h('details', { class: 'group' },
+    const id = 'sec-' + gname.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const a = h('a', { class: 'settings-jump-link', href: '#' + id }, gname);
+    a.title = specs.length + ' field' + (specs.length > 1 ? 's' : '');
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      const t = document.getElementById(id);
+      if (t) { t.open = true; t.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    });
+    jumpNav.append(a);
+  }
+  root.append(jumpNav);
+
+  for (const [gname, specs] of Object.entries(groups)) {
+    const dl = h('details', {
+      class: 'group',
+      id: 'sec-' + gname.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    },
       h('summary', { text: gname }),
       h('div', { class: 'rows' }));
     const rows = $('.rows', dl);
     for (const spec of specs) rows.append(settingRow(spec));
+    dl.open = openSections.has(gname);
+    dl.addEventListener('toggle', () => {
+      if (dl.open) openSections.add(gname); else openSections.delete(gname);
+    });
     root.append(dl);
   }
+
   view.replaceChildren(root);
   updateDirtyHint();
+
+  // Live search: hide non-matching rows, auto-open sections that have hits.
+  // An empty query restores the full list (every row re-shown).
+  function applySettingsFilter() {
+    const q = (searchInput.value || '').trim();
+    let total = 0, matched = 0;
+    $$('details.group', root).forEach(sec => {
+      let secMatch = 0;
+      $$('.row', sec).forEach(row => {
+        total += 1;
+        const key = row.dataset.key;
+        const spec = settingsCache ? settingsCache[key] : null;
+        const hit = fieldMatchesQuery(spec || { label: key, key: key, help: '' }, q);
+        row.hidden = !hit;
+        if (hit) secMatch += 1;
+      });
+      matched += secMatch;
+      if (q) sec.open = secMatch > 0;   // while searching, only matching sections stay open
+    });
+    if (!q) {
+      // Query cleared: restore each section to the user's remembered open state.
+      $$('details.group', root).forEach(sec => {
+        const gname = sec.querySelector('summary').textContent;
+        sec.open = openSections.has(gname);
+      });
+    }
+    searchCount.hidden = !q;
+    searchCount.textContent = q ? matched + ' of ' + total + ' settings' : '';
+  }
+  searchInput.addEventListener('input', applySettingsFilter);
 }
 
 function settingRow(spec) {
   const wrap = h('div', { class: 'row' });
+  wrap.dataset.key = spec.key;   // lets the live search filter identify each row
   let input;
   if (spec.type === 'boolean') {
     input = h('input', { type: 'checkbox' });

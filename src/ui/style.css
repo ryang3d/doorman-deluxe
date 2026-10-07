@@ -228,6 +228,42 @@ main { flex: 1; padding: 20px; max-width: 1100px; width: 100%; margin: 0 auto; }
   z-index: 5;
 }
 .settings-bar .hint { color: var(--muted); font-size: 13px; flex: 1; }
+.settings-search {
+  width: 260px;
+  max-width: 40vw;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.settings-search:focus { outline: none; border-color: var(--accent); }
+.settings-search::placeholder { color: var(--muted); }
+.settings-search-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+/* Jump nav: horizontal chip row, wraps on narrow screens. */
+.settings-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.settings-jump-label { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.settings-jump-link {
+  text-decoration: none;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.settings-jump-link:hover { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 640px) {
+  .settings-search { width: 100%; max-width: none; order: -1; flex-basis: 100%; }
+}
 .btn {
   background: var(--accent);
   color: #fff;
