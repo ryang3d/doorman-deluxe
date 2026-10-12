@@ -96,8 +96,10 @@ DEFAULTS = {
     # Task 3e). 'bare' is the tier-2 swap-in; it skips the poll loop in synthesize().
     # LOCAL-ENGINE ONLY: DOORMAN_VOICE_ENGINE=gemini ignores this key entirely —
     # the cloud Live path is byte-for-byte unchanged regardless of this value.
-    # STT = standalone Parakeet v3 service we deploy (Task 2).
-    'DOORMAN_STT_BASE_URL': 'http://127.0.0.1:10301',
+    # STT = standalone faster-whisper service (deploy/whisper_server.py) on 10302.
+    # Parakeet (:10301) was the original A/B candidate; superseded, kept for
+    # reference in deploy/ but no longer the default.
+    'DOORMAN_STT_BASE_URL': 'http://127.0.0.1:10302',
     # Keep-warm cadence (seconds). Pings TTS + STT so cold starts (~22s TTS /
     # ~9s STT) never land on a visitor. 0 on the interval disables the loop.
     'DOORMAN_KEEP_WARM_SETTLE_S': 30,        # delay before the first warm-up ping
