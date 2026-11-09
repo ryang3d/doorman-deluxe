@@ -49,7 +49,12 @@ def _cfg():
 
 
 def _version():
-    return "doorman-ui-1.0"
+    try:
+        import version as _ver
+
+        return _ver.__version__
+    except ImportError:
+        return "unknown"
 
 
 # --------------------------------------------------------------- status

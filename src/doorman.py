@@ -27,6 +27,7 @@ import audio_bridge as ab
 import doorman_prompt
 import doorman_tools
 import transcripts as _tr
+import version
 
 log = logging.getLogger("doorman")
 
@@ -1150,6 +1151,7 @@ def main():
 
     _dc2.load_env_file()  # .env -> os.environ, so a re-exec picks up GUI edits
     ap = argparse.ArgumentParser()
+    ap.add_argument("--version", action="version", version=f"doorman-deluxe {version.__version__}")
     ap.add_argument(
         "--once", type=float, default=0, help="if >0, run one interaction for N seconds immediately and exit"
     )
