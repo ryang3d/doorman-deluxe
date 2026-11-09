@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """Test av.AudioResampler 24k->48k conversion used in the bridge's audio track."""
-import av, numpy as np, math
+
+import av
+import numpy as np
+import math
 from fractions import Fraction
 
+
 def to_ndarray(chunk):
-    arr = np.frombuffer(chunk if len(chunk)%2==0 else chunk+b'\x00', dtype=np.int16)
+    arr = np.frombuffer(chunk if len(chunk) % 2 == 0 else chunk + b"\x00", dtype=np.int16)
     return arr
+
 
 # simulate 0.1s of 24k mono pcm16 = 2400 samples
 rate_in = 24000
 n = 2400
 t = np.arange(n)
-sig = (32767*0.5*np.sin(2*math.pi*440*t/rate_in)).astype(np.int16)
+sig = (32767 * 0.5 * np.sin(2 * math.pi * 440 * t / rate_in)).astype(np.int16)
 chunk = sig.tobytes()
 
-resampler = av.AudioResampler(format='s16', layout='mono', rate=48000)
-frame = av.AudioFrame.from_ndarray(to_ndarray(chunk).reshape(1,-1), format='s16', layout='mono')
+resampler = av.AudioResampler(format="s16", layout="mono", rate=48000)
+frame = av.AudioFrame.from_ndarray(to_ndarray(chunk).reshape(1, -1), format="s16", layout="mono")
 frame.sample_rate = rate_in
 frame.time_base = Fraction(1, rate_in)
 frame.pts = 0

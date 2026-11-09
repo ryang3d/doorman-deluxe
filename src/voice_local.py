@@ -9,7 +9,13 @@ TTS:  Voicebox /generate (Chatterbox, Ryan's clone)
 Audio in/out formats: visitor mic 16k s16le (ffmpeg pipeline), AI audio 24k s16le
 queued into audio_q for the existing GeminiAudioTrack (no rate conversion needed).
 """
-import asyncio, base64, io, json, logging, time, wave
+
+import asyncio
+import io
+import json
+import logging
+import time
+import wave
 import numpy as np
 
 import doorman_config as _dc
@@ -18,8 +24,8 @@ import prompts_store
 
 log = logging.getLogger("doorman.local")
 
-SAMPLE_RATE = 16000          # mic / VAD / STT rate
-VAD_FRAME_MS = 30            # webrtcvad needs 10/20/30 ms frames
+SAMPLE_RATE = 16000  # mic / VAD / STT rate
+VAD_FRAME_MS = 30  # webrtcvad needs 10/20/30 ms frames
 VAD_FRAME_BYTES = SAMPLE_RATE * VAD_FRAME_MS // 1000 * 2  # s16le bytes
 
 
@@ -33,12 +39,16 @@ def tts_profile_for_language(language: str, cfg) -> tuple:
     Any 'es*' -> Spanish engine (chatterbox Multilingual); everything else (incl.
     unknown/empty) -> the English engine (chatterbox_turbo). Both use Ryan's cloned
     voice profile. Returns (profile_id, engine)."""
-    lang = (language or '').strip().lower()
-    if lang.startswith('es'):
-        return (cfg.get('DOORMAN_TTS_PROFILE_ES') or cfg.get('DOORMAN_TTS_PROFILE_EN'),
-                cfg.get('DOORMAN_TTS_ENGINE_ES') or 'chatterbox')
-    return (cfg.get('DOORMAN_TTS_PROFILE_EN') or 'ffadb2a2-cacc-4c7f-8d26-69f7c4c22246',
-            cfg.get('DOORMAN_TTS_ENGINE_EN') or 'chatterbox_turbo')
+    lang = (language or "").strip().lower()
+    if lang.startswith("es"):
+        return (
+            cfg.get("DOORMAN_TTS_PROFILE_ES") or cfg.get("DOORMAN_TTS_PROFILE_EN"),
+            cfg.get("DOORMAN_TTS_ENGINE_ES") or "chatterbox",
+        )
+    return (
+        cfg.get("DOORMAN_TTS_PROFILE_EN") or "ffadb2a2-cacc-4c7f-8d26-69f7c4c22246",
+        cfg.get("DOORMAN_TTS_ENGINE_EN") or "chatterbox_turbo",
+    )
 
 
 # ---------------------------------------------------------------- VAD endpointer
@@ -52,9 +62,11 @@ class UtteranceEndpointer:
     All methods are sync; caller runs inside an async task at 30 ms cadence.
     """
 
-    def __init__(self, silence_ms=700, min_speech_ms=300, preres_ms=300,
-                 aggressiveness=3, max_ring_ms=10000, min_rms=500.0):
+    def __init__(
+        self, silence_ms=700, min_speech_ms=300, preres_ms=300, aggressiveness=3, max_ring_ms=10000, min_rms=500.0
+    ):
         import webrtcvad
+
         self.vad = webrtcvad.Vad(aggressiveness)  # 0-3; 3 = drop non-speech hard
         self.silence_ms = int(silence_ms)
         self.min_speech_ms = int(min_speech_ms)
@@ -64,10 +76,9 @@ class UtteranceEndpointer:
         # utterance to its tail word, which is why STT only heard "Yeah."/"Oh."
         # on the live door mic. 10 s ring + 48 KB/frame is ~480 KB, cheap in RAM.
         ring_from_silence = max(silence_ms + preres_ms + 100, 0) // VAD_FRAME_MS + 1
-        self.keep_frames = max(ring_from_silence,
-                               int(max_ring_ms) // VAD_FRAME_MS + 1)
-        self.frames = []              # ring of (frame_bytes, is_speech, muted, t_mono)
-        self._speech_total = 0        # cumulative count of non-muted speech frames (VAD)
+        self.keep_frames = max(ring_from_silence, int(max_ring_ms) // VAD_FRAME_MS + 1)
+        self.frames = []  # ring of (frame_bytes, is_speech, muted, t_mono)
+        self._speech_total = 0  # cumulative count of non-muted speech frames (VAD)
         # Duration (ms) of the currently OPEN trailing speech segment (visitor is
         # mid-utterance, not yet finalized). 0 when no open segment. Used to refresh
         # the idle clock while the visitor is still talking so the watchdog cannot
@@ -102,6 +113,7 @@ class UtteranceEndpointer:
         if speech:
             self._speech_total += 1
         import time as _time
+
         if now is None:
             now = _time.monotonic()
         # t_mono: wall-clock stamp. Gap detection in _check_endpoint uses the time
@@ -109,7 +121,7 @@ class UtteranceEndpointer:
         # 4-12s) splits a segment instead of letting two utterances merge.
         self.frames.append((frame, speech, muted, now))
         if len(self.frames) > self.keep_frames:
-            self.frames = self.frames[-self.keep_frames:]
+            self.frames = self.frames[-self.keep_frames :]
         return self._check_endpoint(now)
 
     # Tolerated gap inside a voice burst. A between-words pause in a normal
@@ -142,6 +154,7 @@ class UtteranceEndpointer:
         Jenny on?", 2026-09-19). Wall-clock gaps make a stall split the segment.
         """
         import time as _time
+
         if now is None:
             now = _time.monotonic()
         n = len(self.frames)
@@ -152,7 +165,7 @@ class UtteranceEndpointer:
         # > VOICE_GAP_MS (or by frame count, which is the same when frames arrive
         # on time), by muted (echo-gate) frames, or by end-of-ring.
         gap_s = self.VOICE_GAP_MS / 1000.0
-        last_good = None                 # (start, end) of most recent long-enough segment
+        last_good = None  # (start, end) of most recent long-enough segment
         seg_start = seg_end = None
         for i in range(n):
             fr, sp, muted, t = self.frames[i]
@@ -169,8 +182,9 @@ class UtteranceEndpointer:
                     # though only a few frames exist between the two speech runs.)
                     # 1 ms epsilon: boundary duration vs min_speech_ms must not lose
                     # to float timestamp error.
-                    if (self.frames[seg_end][3] - self.frames[seg_start][3]
-                            + VAD_FRAME_MS / 1000.0) * 1000 + 1.0 >= self.min_speech_ms:
+                    if (
+                        self.frames[seg_end][3] - self.frames[seg_start][3] + VAD_FRAME_MS / 1000.0
+                    ) * 1000 + 1.0 >= self.min_speech_ms:
                         last_good = (seg_start, seg_end)
                     seg_start = seg_end = i
                 else:
@@ -179,8 +193,7 @@ class UtteranceEndpointer:
         # it is the most recent long-enough segment (don't overwrite a good
         # segment with a trailing too-short noise blip).
         if seg_start is not None:
-            trail_ms = (self.frames[seg_end][3] - self.frames[seg_start][3]
-                        + VAD_FRAME_MS / 1000.0) * 1000
+            trail_ms = (self.frames[seg_end][3] - self.frames[seg_start][3] + VAD_FRAME_MS / 1000.0) * 1000
             if trail_ms + 1.0 >= self.min_speech_ms:
                 last_good = (seg_start, seg_end)
         # Expose the currently-OPEN trailing segment's duration (the visitor is
@@ -191,13 +204,13 @@ class UtteranceEndpointer:
         # RMS >= min_rms keeps the idle clock fresh only during real voice
         # (RMS 9000+). 0 when no open RMS-passing speech run.
         if seg_start is not None:
-            dur_ms = (self.frames[seg_end][3] - self.frames[seg_start][3]
-                      + VAD_FRAME_MS / 1000.0) * 1000
+            dur_ms = (self.frames[seg_end][3] - self.frames[seg_start][3] + VAD_FRAME_MS / 1000.0) * 1000
             try:
                 import numpy as _np
-                ob = b''.join(fr for fr, _, _, _ in self.frames[seg_start:seg_end + 1])
+
+                ob = b"".join(fr for fr, _, _, _ in self.frames[seg_start : seg_end + 1])
                 a = _np.frombuffer(ob, dtype=_np.int16).astype(_np.float64)
-                orms = float(_np.sqrt(_np.mean(a ** 2))) if a.size else 0.0
+                orms = float(_np.sqrt(_np.mean(a**2))) if a.size else 0.0
             except Exception:
                 orms = 0.0
             self._open_seg_ms = dur_ms if orms >= self.min_rms else 0
@@ -208,11 +221,12 @@ class UtteranceEndpointer:
         seg_start, seg_end = last_good
         # RMS gate: the door mic's ambient false-positives are quiet (RMS ~300-400);
         # real voice is loud (RMS 9000+). A segment below min_rms is a noise blip.
-        seg_bytes = b''.join(fr for fr, _, _, _ in self.frames[seg_start:seg_end + 1])
+        seg_bytes = b"".join(fr for fr, _, _, _ in self.frames[seg_start : seg_end + 1])
         try:
             import numpy as _np
+
             a = _np.frombuffer(seg_bytes, dtype=_np.int16).astype(_np.float64)
-            seg_rms = float(_np.sqrt(_np.mean(a ** 2))) if a.size else 0.0
+            seg_rms = float(_np.sqrt(_np.mean(a**2))) if a.size else 0.0
         except Exception:
             seg_rms = 0.0
         if seg_rms < self.min_rms:
@@ -229,9 +243,9 @@ class UtteranceEndpointer:
         # concatenating them is correct even across a sub-300ms drop.
         start = max(0, seg_start - 10)
         end = seg_end + 1
-        utter = b''.join(fr for fr, _, _, _ in self.frames[start:end])
-        self.frames = self.frames[end:]   # consume; keep post-end tail for next
-        self._open_seg_ms = 0             # that segment just closed
+        utter = b"".join(fr for fr, _, _, _ in self.frames[start:end])
+        self.frames = self.frames[end:]  # consume; keep post-end tail for next
+        self._open_seg_ms = 0  # that segment just closed
         return utter or None
 
     def flush(self):
@@ -241,24 +255,38 @@ class UtteranceEndpointer:
 
 def openai_tools_schema():
     return [
-        {"type": "function", "function": {
-            "name": "snapshot_front_door",
-            "description": ("Capture a still of the front door camera and save it. "
-                            "Use when you need to see who/what is at the door. "
-                            "Returns the saved file path."),
-            "parameters": {"type": "object", "properties": {}, "required": []}}},
-        {"type": "function", "function": {
-            "name": "notify_ryan",
-            "description": ("Send a notification to the homeowner about a package, "
-                            "issue or urgent report. Provide a concise message."),
-            "parameters": {"type": "object",
-                           "properties": {"message": {"type": "string"}},
-                           "required": ["message"]}}},
+        {
+            "type": "function",
+            "function": {
+                "name": "snapshot_front_door",
+                "description": (
+                    "Capture a still of the front door camera and save it. "
+                    "Use when you need to see who/what is at the door. "
+                    "Returns the saved file path."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "notify_ryan",
+                "description": (
+                    "Send a notification to the homeowner about a package, "
+                    "issue or urgent report. Provide a concise message."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+            },
+        },
     ]
 
 
 def local_system_prompt(base_prompt: str) -> str:
-    return base_prompt + "\n\n" + prompts_store.get('local_notes')
+    return base_prompt + "\n\n" + prompts_store.get("local_notes")
 
 
 # ---------------------------------------------------------------- HTTP clients
@@ -266,24 +294,25 @@ async def transcribe_utterance(pcm16_16k: bytes, cfg) -> dict:
     """POST a raw 16k s16le utterance to the parakeet service as a WAV file.
     Returns {'text': str, 'language': str}. Raises on non-200."""
     import aiohttp
+
     buf = io.BytesIO()
-    with wave.open(buf, 'wb') as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SAMPLE_RATE)
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
         w.writeframes(pcm16_16k)
     buf.seek(0)
-    url = cfg['DOORMAN_STT_BASE_URL'].rstrip('/') + '/transcribe'
+    url = cfg["DOORMAN_STT_BASE_URL"].rstrip("/") + "/transcribe"
     data = aiohttp.FormData()
-    data.add_field('file', buf, filename='utterance.wav',
-                   content_type='audio/wav')
+    data.add_field("file", buf, filename="utterance.wav", content_type="audio/wav")
     async with aiohttp.ClientSession() as s:
         async with s.post(url, data=data, timeout=aiohttp.ClientTimeout(total=20)) as r:
             if r.status != 200:
-                raise RuntimeError('stt %s: %s' % (r.status, (await r.text())[:200]))
+                raise RuntimeError("stt %s: %s" % (r.status, (await r.text())[:200]))
             return await r.json()
 
 
-async def _voicebox_generate(text, profile_id, engine, cfg,
-                             poll_timeout=60.0, poll_step=0.4, poll_cap=2.0) -> dict:
+async def _voicebox_generate(text, profile_id, engine, cfg, poll_timeout=60.0, poll_step=0.4, poll_cap=2.0) -> dict:
     """POST /generate to voicebox, poll /generate/<id>/status until completed.
     voicebox is async: POST returns a generation record with status 'generating';
     the status endpoint emits SSE lines 'data: {...}' with the final record.
@@ -291,49 +320,55 @@ async def _voicebox_generate(text, profile_id, engine, cfg,
     poll_cap (2.0s). A ~2.5s clip is caught within ~0.4+0.8+1.6 = 2.8s instead of
     the old fixed-2.0s step, which reported a 2.5s clip at ~4.0s (up to ~1.5s of
     pure poll-granularity latency). Returns the completed generation record."""
-    import aiohttp, json as _json
-    base = cfg['DOORMAN_TTS_BASE_URL'].rstrip('/')
-    payload = {"text": text, "language": "en" if engine != 'chatterbox' else "es",
-               "profile_id": profile_id, "engine": engine}
+    import aiohttp
+    import json as _json
+
+    base = cfg["DOORMAN_TTS_BASE_URL"].rstrip("/")
+    payload = {
+        "text": text,
+        "language": "en" if engine != "chatterbox" else "es",
+        "profile_id": profile_id,
+        "engine": engine,
+    }
     async with aiohttp.ClientSession() as s:
-        async with s.post(base + '/generate', json=payload,
-                          timeout=aiohttp.ClientTimeout(total=30)) as r:
+        async with s.post(base + "/generate", json=payload, timeout=aiohttp.ClientTimeout(total=30)) as r:
             if r.status != 200:
-                raise RuntimeError('tts post %s: %s' % (r.status, (await r.text())[:200]))
-            gid = (await r.json())['id']
+                raise RuntimeError("tts post %s: %s" % (r.status, (await r.text())[:200]))
+            gid = (await r.json())["id"]
         deadline = time.time() + poll_timeout
         step = poll_step
         while time.time() < deadline:
             await asyncio.sleep(step)
             step = min(step * 2, poll_cap)
-            async with s.get('%s/generate/%s/status' % (base, gid),
-                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with s.get("%s/generate/%s/status" % (base, gid), timeout=aiohttp.ClientTimeout(total=10)) as r:
                 raw = (await r.text()).strip()
             # SSE: possibly multiple 'data: ' lines; take the LAST one
             rec = None
             for line in reversed(raw.splitlines()):
-                if line.startswith('data: '):
-                    rec = _json.loads(line[6:]); break
+                if line.startswith("data: "):
+                    rec = _json.loads(line[6:])
+                    break
             if rec is None:
-                raise RuntimeError('tts: bad status payload: %s' % raw[:120])
-            st = rec.get('status')
-            if st == 'completed':
+                raise RuntimeError("tts: bad status payload: %s" % raw[:120])
+            st = rec.get("status")
+            if st == "completed":
                 return rec
-            if st in ('failed', 'cancelled'):
-                raise RuntimeError('tts %s: %s' % (st, rec.get('error') or ''))
-    raise RuntimeError('tts: poll timeout for %s' % gid)
+            if st in ("failed", "cancelled"):
+                raise RuntimeError("tts %s: %s" % (st, rec.get("error") or ""))
+    raise RuntimeError("tts: poll timeout for %s" % gid)
 
 
 def _wav_to_pcm16(wav_bytes: bytes, target_rate: int = 24000) -> bytes:
     """Decode a WAV to target_rate Hz mono s16le bytes. voicebox returns 24k mono
     s16 (the rate GeminiAudioTrack expects) so this is usually a pass-through; it
     resamples/converts otherwise. Returns b'' on failure."""
-    import numpy as np
     try:
         buf = io.BytesIO(wav_bytes)
-        with wave.open(buf, 'rb') as w:
-            ch = w.getnchannels(); rate = w.getframerate()
-            width = w.getsampwidth(); frames = w.readframes(w.getnframes())
+        with wave.open(buf, "rb") as w:
+            ch = w.getnchannels()
+            rate = w.getframerate()
+            width = w.getsampwidth()
+            frames = w.readframes(w.getnframes())
         if width == 2:
             pcm = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
         elif width == 1:
@@ -341,9 +376,9 @@ def _wav_to_pcm16(wav_bytes: bytes, target_rate: int = 24000) -> bytes:
         elif width == 4:
             pcm = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 32768.0
         else:
-            return b''
+            return b""
         if ch > 1:
-            pcm = pcm.reshape(-1, ch).mean(axis=1)   # downmix to mono
+            pcm = pcm.reshape(-1, ch).mean(axis=1)  # downmix to mono
         if rate != target_rate:
             n = int(len(pcm) * target_rate / rate)
             idx = np.linspace(0, len(pcm) - 1, n)
@@ -352,7 +387,7 @@ def _wav_to_pcm16(wav_bytes: bytes, target_rate: int = 24000) -> bytes:
         return pcm.tobytes()
     except Exception as e:
         log.warning("tts wav decode failed: %s", e)
-        return b''
+        return b""
 
 
 async def synthesize(text, cfg, audio_q, speaking, activity=None):
@@ -363,18 +398,18 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
     args here: we pick the engine from cfg defaults when no language is given).
     Returns bytes queued."""
     import aiohttp
-    profile, engine = tts_profile_for_language(getattr(speaking, '_lang', ''), cfg)
+
+    profile, engine = tts_profile_for_language(getattr(speaking, "_lang", ""), cfg)
     rec = await _voicebox_generate(text, profile, engine, cfg)
-    gid = rec['id']
+    gid = rec["id"]
     # voicebox writes the wav to its generations volume; fetch it via the
     # confirmed REST endpoint GET /audio/{generation_id} (verified 2026-09-15
     # against the live openapi.json).
-    base = cfg['DOORMAN_TTS_BASE_URL'].rstrip('/')
+    base = cfg["DOORMAN_TTS_BASE_URL"].rstrip("/")
     async with aiohttp.ClientSession() as s:
-        async with s.get(base + '/audio/' + gid,
-                         timeout=aiohttp.ClientTimeout(total=30)) as r:
+        async with s.get(base + "/audio/" + gid, timeout=aiohttp.ClientTimeout(total=30)) as r:
             if r.status != 200:
-                raise RuntimeError('tts audio %s: %s' % (r.status, (await r.text())[:200]))
+                raise RuntimeError("tts audio %s: %s" % (r.status, (await r.text())[:200]))
             wav = await r.read()
     pcm = _wav_to_pcm16(wav)
     if pcm:
@@ -383,12 +418,13 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
         # must be queued too, or every reply loses its final word
         # (2026-09-17: 10-16% of each doorman reply was being dropped).
         for i in range(0, len(pcm), chunk):
-            audio_q.put_nowait(pcm[i:i + chunk])
+            audio_q.put_nowait(pcm[i : i + chunk])
         await speaking.mark_active()
         # The local path has no receive-loop to clear the sticky active flag, so
         # schedule it at playback end: pcm is 24k s16le, paced in real time
         # downstream (aiortc emits one 20 ms frame per 20 ms of wall clock).
         play_s = len(pcm) / (24000 * 2)
+
         async def _release_echo_gate():
             try:
                 await asyncio.sleep(play_s + 0.5)
@@ -396,11 +432,11 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
                 log.info("local: echo gate released after %.1fs playback", play_s)
             except Exception:
                 pass
+
         asyncio.get_event_loop().create_task(_release_echo_gate())
         if activity:
             await activity.mark()
-    log.info("tts: queued %d bytes for %d chars (engine=%s)",
-             len(pcm), len(text), engine)
+    log.info("tts: queued %d bytes for %d chars (engine=%s)", len(pcm), len(text), engine)
     return len(pcm)
 
 
@@ -417,8 +453,8 @@ async def synthesize(text, cfg, audio_q, speaking, activity=None):
 # DOORMAN_KEEP_WARM_INTERVAL_S. No-op for the gemini engine (no local STT/TTS).
 # voicebox model-name for each engine (the /models/status `model_name` values).
 _VOICEBOX_MODEL_NAMES = {
-    'chatterbox_turbo': 'chatterbox-turbo',
-    'chatterbox': 'chatterbox-tts',
+    "chatterbox_turbo": "chatterbox-turbo",
+    "chatterbox": "chatterbox-tts",
 }
 
 
@@ -433,30 +469,29 @@ async def _voicebox_model_loaded(engine, cfg):
     'Hello.' generation 2-3x/hour. Unknown/None -> caller should generate
     (the safe side)."""
     import aiohttp
-    base = cfg['DOORMAN_TTS_BASE_URL'].rstrip('/')
-    want = _VOICEBOX_MODEL_NAMES.get(engine, engine.replace('_', '-'))
+
+    base = cfg["DOORMAN_TTS_BASE_URL"].rstrip("/")
+    want = _VOICEBOX_MODEL_NAMES.get(engine, engine.replace("_", "-"))
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(base + '/models/status',
-                             timeout=aiohttp.ClientTimeout(total=5)) as r:
+            async with s.get(base + "/models/status", timeout=aiohttp.ClientTimeout(total=5)) as r:
                 if r.status != 200:
                     return None
                 data = await r.json()
-        models = data.get('models') or []
+        models = data.get("models") or []
         for m in models:
-            if m.get('model_name') == want:
-                return bool(m.get('loaded'))
+            if m.get("model_name") == want:
+                return bool(m.get("loaded"))
         return None
     except Exception:
         return None
 
 
 async def keep_warm_loop(cfg):
-    settle_s = float(cfg.get('DOORMAN_KEEP_WARM_SETTLE_S', 30))
-    interval_s = float(cfg.get('DOORMAN_KEEP_WARM_INTERVAL_S', 1500))
-    silence_pcm = b'\x00' * (int(SAMPLE_RATE) * 2)  # 0.5s of 16k s16le silence
-    log.info("keep-warm: active (first ping in %.0fs, then every %.0fs)",
-             settle_s, interval_s)
+    settle_s = float(cfg.get("DOORMAN_KEEP_WARM_SETTLE_S", 30))
+    interval_s = float(cfg.get("DOORMAN_KEEP_WARM_INTERVAL_S", 1500))
+    silence_pcm = b"\x00" * (int(SAMPLE_RATE) * 2)  # 0.5s of 16k s16le silence
+    log.info("keep-warm: active (first ping in %.0fs, then every %.0fs)", settle_s, interval_s)
     try:
         await asyncio.sleep(settle_s)
     except asyncio.CancelledError:
@@ -469,8 +504,7 @@ async def keep_warm_loop(cfg):
         try:
             stt = await transcribe_utterance(silence_pcm, cfg)
             stt_ms = int((time.monotonic() - t0) * 1000)
-            log.info("keep-warm STT ok in %d ms (text=%r)", stt_ms,
-                     (stt.get('text') or '')[:20])
+            log.info("keep-warm STT ok in %d ms (text=%r)", stt_ms, (stt.get("text") or "")[:20])
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -483,20 +517,17 @@ async def keep_warm_loop(cfg):
         # cold (right after a voicebox container restart). This stops the
         # warmup from committing a persisted 'Hello.' generation every cycle.
         t1 = time.monotonic()
-        profile, engine = tts_profile_for_language('', cfg)
+        profile, engine = tts_profile_for_language("", cfg)
         try:
             if await _voicebox_model_loaded(engine, cfg) is True:
                 log.info("keep-warm TTS skip (model already loaded, engine=%s)", engine)
             else:
                 await _voicebox_generate("Hello.", profile, engine, cfg)
-                log.info("keep-warm TTS ok in %d ms (engine=%s)",
-                         int((time.monotonic() - t1) * 1000), engine)
+                log.info("keep-warm TTS ok in %d ms (engine=%s)", int((time.monotonic() - t1) * 1000), engine)
         except asyncio.CancelledError:
             return
         except Exception as e:
-            log.warning("keep-warm TTS failed: %s: %s",
-                        type(e).__name__, str(e)[:120] or '(no message)',
-                        exc_info=True)
+            log.warning("keep-warm TTS failed: %s: %s", type(e).__name__, str(e)[:120] or "(no message)", exc_info=True)
         log.info("keep-warm cycle done; next in %.0fs", interval_s)
         try:
             await asyncio.sleep(interval_s)
@@ -514,42 +545,38 @@ def _claims_notification(text: str) -> bool:
     none fired this turn, fire a catch-up one. Match on an OWNER noun + ACTION verb
     (a bare 'I'll let you know' to the visitor is NOT a claim, so require an
     owner/resident/homeowner/owner noun)."""
-    t = (text or '').lower()
-    owner = any(w in t for w in
-                ('resident', 'homeowner', 'home owner', 'owner',
-                 'the house', 'the homeowner'))
-    verb = any(w in t for w in
-               ('know', 'notif', 'alert', 'told', 'tell', 'sent', 'gave'))
+    t = (text or "").lower()
+    owner = any(w in t for w in ("resident", "homeowner", "home owner", "owner", "the house", "the homeowner"))
+    verb = any(w in t for w in ("know", "notif", "alert", "told", "tell", "sent", "gave"))
     return owner and verb
 
 
-async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
-                     max_tool_rounds=3):
+async def brain_turn(system_prompt, history, user_text, cfg, activity=None, max_tool_rounds=3):
     """One conversational turn against the OpenAI-compatible endpoint WITH tools
     (default SGLang qwen3.8-27b on the LLM host; Ollama works via the same shape).
     history: list of OpenAI messages (system first, NOT included here).
     Returns (final_text, updated_history). Tools execute via doorman_tools."""
     import aiohttp
     import doorman_tools
-    url = cfg['DOORMAN_LLM_BASE_URL'].rstrip('/') + '/chat/completions'
-    headers = {'Content-Type': 'application/json'}
-    key = cfg.get('DOORMAN_LLM_API_KEY') or ''
-    if key and key != 'ollama':
-        headers['Authorization'] = 'Bearer ' + key
-    messages = [{'role': 'system', 'content': system_prompt}] + history + \
-               [{'role': 'user', 'content': user_text}]
+
+    url = cfg["DOORMAN_LLM_BASE_URL"].rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    key = cfg.get("DOORMAN_LLM_API_KEY") or ""
+    if key and key != "ollama":
+        headers["Authorization"] = "Bearer " + key
+    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
     new_msgs = []
     notify_fired = False
     for _round in range(max_tool_rounds + 1):
         payload = {
-            'model': cfg['DOORMAN_LLM_MODEL'],
-            'messages': messages,
-            'tools': openai_tools_schema(),
-            'tool_choice': 'auto',
-            'max_tokens': int(cfg.get('DOORMAN_LLM_MAX_TOKENS', 400)),
-            'temperature': float(cfg.get('DOORMAN_LLM_TEMPERATURE', 0.8)),
-            'top_p': 0.9,
-            'stream': False,
+            "model": cfg["DOORMAN_LLM_MODEL"],
+            "messages": messages,
+            "tools": openai_tools_schema(),
+            "tool_choice": "auto",
+            "max_tokens": int(cfg.get("DOORMAN_LLM_MAX_TOKENS", 400)),
+            "temperature": float(cfg.get("DOORMAN_LLM_TEMPERATURE", 0.8)),
+            "top_p": 0.9,
+            "stream": False,
             # 'options' (think/keep_alive) is Ollama-only; SGLang ignores unknown
             # top-level keys, so send it only for the Ollama fallback.
         }
@@ -558,22 +585,19 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
         # reply (verified 2026-09-17: 13s, finish_reason=length, content=''). Off:
         # 1-5s, natural, tool-calling intact. SGLang exposes this via
         # chat_template_kwargs; the Ollama path uses options.think below.
-        if cfg.get('DOORMAN_LLM_API_KEY') != 'ollama':
-            payload['chat_template_kwargs'] = {
-                'enable_thinking': bool(cfg.get('DOORMAN_LLM_THINK', False))}
-        if (cfg.get('DOORMAN_LLM_API_KEY') or '') == 'ollama':
-            payload['options'] = {'think': False,
-                                  'keep_alive': cfg.get('DOORMAN_LLM_KEEP_ALIVE', '30m')}
+        if cfg.get("DOORMAN_LLM_API_KEY") != "ollama":
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(cfg.get("DOORMAN_LLM_THINK", False))}
+        if (cfg.get("DOORMAN_LLM_API_KEY") or "") == "ollama":
+            payload["options"] = {"think": False, "keep_alive": cfg.get("DOORMAN_LLM_KEEP_ALIVE", "30m")}
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, json=payload, headers=headers,
-                              timeout=aiohttp.ClientTimeout(total=60)) as r:
+            async with s.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as r:
                 if r.status != 200:
-                    raise RuntimeError('llm %s: %s' % (r.status, (await r.text())[:200]))
+                    raise RuntimeError("llm %s: %s" % (r.status, (await r.text())[:200]))
                 d = await r.json()
-        choice = d['choices'][0]['message']
-        tool_calls = choice.get('tool_calls') or []
+        choice = d["choices"][0]["message"]
+        tool_calls = choice.get("tool_calls") or []
         if not tool_calls:
-            final = (choice.get('content') or '').strip()
+            final = (choice.get("content") or "").strip()
             # Backstop: if the reply CLAIMS a notification but none fired this
             # turn, fire a catch-up notify_ryan so the owner actually hears from
             # the doorman even when the model only described the action verbally.
@@ -585,47 +609,47 @@ async def brain_turn(system_prompt, history, user_text, cfg, activity=None,
                     # "Doorman notified the homeowner..." prefix (title is already
                     # "Doorman", so the prefix was redundant and pushed the visitor
                     # text off the end where truncation cut it).
-                    catch = ("Visitor at the door: \"%s\"" % user_text.strip()[:140])
-                    log.info("notify backstop: reply claimed a notification "
-                             "without a tool call -> firing catch-up notify_ryan")
+                    catch = 'Visitor at the door: "%s"' % user_text.strip()[:140]
+                    log.info(
+                        "notify backstop: reply claimed a notification "
+                        "without a tool call -> firing catch-up notify_ryan"
+                    )
                     ok, _val = await doorman_tools.notify_ryan(catch)
                     if activity:
                         await activity.mark()
                 except Exception as e:
                     log.warning("notify backstop failed: %s", e)
-            messages.append({'role': 'assistant', 'content': final})
+            messages.append({"role": "assistant", "content": final})
             new_msgs.append(messages[-1])
             return final, new_msgs
         # execute tools, feed results back
         messages.append(choice)
         for tc in tool_calls:
-            fn = tc['function']['name']
+            fn = tc["function"]["name"]
             try:
-                args = json.loads(tc['function'].get('arguments') or '{}')
+                args = json.loads(tc["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
             log.info("[tool call] %s %s", fn, json.dumps(args)[:200])
-            _tr.msg('tool', 'tool: %s' % fn, kind='tool')
+            _tr.msg("tool", "tool: %s" % fn, kind="tool")
             if activity:
                 await activity.mark()
-            if fn == 'notify_ryan':
+            if fn == "notify_ryan":
                 notify_fired = True
-                ok, val = await doorman_tools.notify_ryan(
-                    str(args.get('message', '')))
-            elif fn == 'snapshot_front_door':
+                ok, val = await doorman_tools.notify_ryan(str(args.get("message", "")))
+            elif fn == "snapshot_front_door":
                 ok, val = await doorman_tools.snapshot_front_door()
             else:
-                ok, val = False, 'unknown tool ' + fn
-            messages.append({'role': 'tool',
-                             'tool_call_id': tc.get('id', fn),
-                             'content': json.dumps({'ok': ok, 'value': val})})
+                ok, val = False, "unknown tool " + fn
+            messages.append(
+                {"role": "tool", "tool_call_id": tc.get("id", fn), "content": json.dumps({"ok": ok, "value": val})}
+            )
             new_msgs.append(messages[-1])
-    raise RuntimeError('brain: too many tool rounds')
+    raise RuntimeError("brain: too many tool rounds")
 
 
 # ---------------------------------------------------------------- full interaction
-async def run_interaction_local(system_prompt, trigger_text,
-                                duration_s=120.0, idle_timeout_s=None):
+async def run_interaction_local(system_prompt, trigger_text, duration_s=120.0, idle_timeout_s=None):
     """Local-engine door interaction. Reuses the proven talkback WebRTC transport and
     teardown from audio_bridge; replaces the Gemini Live loop with:
     mic(ffmpeg RTSP) -> webrtcvad endpointer -> parakeet STT (3080 Ti, language
@@ -635,8 +659,10 @@ async def run_interaction_local(system_prompt, trigger_text,
     EN -> chatterbox_turbo (clone), ES/other -> chatterbox multilingual."""
     import asyncio
     import audio_bridge as ab
+
     cfg = load_cfg()
-    import doorman as _d   # ActivityClock lives there; avoid import cycle at module top
+    import doorman as _d  # ActivityClock lives there; avoid import cycle at module top
+
     activity = _d.ActivityClock()
     audio_q = asyncio.Queue()
     stop_ev = asyncio.Event()
@@ -657,8 +683,9 @@ async def run_interaction_local(system_prompt, trigger_text,
             pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
             break
         except Exception as e:
-            log.warning("local talkback attempt %d/3 failed: %s", attempt + 1,
-                        (str(e).splitlines()[0] if str(e) else e)[:120])
+            log.warning(
+                "local talkback attempt %d/3 failed: %s", attempt + 1, (str(e).splitlines()[0] if str(e) else e)[:120]
+            )
             if attempt < 2:
                 await asyncio.sleep(8.0)
     if ws is None:
@@ -667,11 +694,12 @@ async def run_interaction_local(system_prompt, trigger_text,
 
     speaking = ab.SpeakingState()
     ep = UtteranceEndpointer(
-        silence_ms=int(cfg.get('DOORMAN_LOCAL_SILENCE_MS', 700)),
-        min_speech_ms=int(cfg.get('DOORMAN_LOCAL_MIN_SPEECH_MS', 300)),
-        aggressiveness=int(cfg.get('DOORMAN_LOCAL_VAD_AGGRESSIVENESS', 2)),
-        max_ring_ms=int(cfg.get('DOORMAN_LOCAL_MAX_RING_MS', 10000)),
-        min_rms=float(cfg.get('DOORMAN_LOCAL_MIN_RMS', 500)))
+        silence_ms=int(cfg.get("DOORMAN_LOCAL_SILENCE_MS", 700)),
+        min_speech_ms=int(cfg.get("DOORMAN_LOCAL_MIN_SPEECH_MS", 300)),
+        aggressiveness=int(cfg.get("DOORMAN_LOCAL_VAD_AGGRESSIVENESS", 2)),
+        max_ring_ms=int(cfg.get("DOORMAN_LOCAL_MAX_RING_MS", 10000)),
+        min_rms=float(cfg.get("DOORMAN_LOCAL_MIN_RMS", 500)),
+    )
     # Gain multiplier on the doorbell mic RTSP. The raw doorbell signal is very
     # quiet (peak ~800/32768, RMS ~170). 40x pushed loud visitor speech to the
     # int16 ceiling (~peak 32767) so parakeet heard clipping -> 'silence/empty'.
@@ -680,8 +708,8 @@ async def run_interaction_local(system_prompt, trigger_text,
     # whole capture pinned at 32767, parakeet mangled 'I have a delivery' into
     # 'I haven't delivered'). The limiter caps the peak (~0.95) instead of
     # hard-clipping, while leaving quiet voices / ambient untouched.
-    mic_gain = float(cfg.get('DOORMAN_LOCAL_MIC_GAIN', 10.0))
-    mic_limiter = str(cfg.get('DOORMAN_LOCAL_MIC_LIMITER', 'true')).strip().lower() in ('1', 'true', 'yes', 'on')
+    mic_gain = float(cfg.get("DOORMAN_LOCAL_MIC_GAIN", 10.0))
+    mic_limiter = str(cfg.get("DOORMAN_LOCAL_MIC_LIMITER", "true")).strip().lower() in ("1", "true", "yes", "on")
     history = []
 
     # --- shared audio-chunk processing -----------------------------------------
@@ -689,14 +717,17 @@ async def run_interaction_local(system_prompt, trigger_text,
     # (mic_loop_http) feed 3200-byte (100 ms @16k) chunks here, so VAD /
     # endpointer / STT / activity behave identically regardless of mic source.
     _cap = None
-    _cap_env = cfg.get('DOORMAN_LOCAL_DEBUG_CAPTURE')
+    _cap_env = cfg.get("DOORMAN_LOCAL_DEBUG_CAPTURE")
     if _cap_env:
         import wave as _wave
-        _cap = _wave.open(_cap_env, 'wb')
-        _cap.setnchannels(1); _cap.setsampwidth(2); _cap.setframerate(SAMPLE_RATE)
+
+        _cap = _wave.open(_cap_env, "wb")
+        _cap.setnchannels(1)
+        _cap.setsampwidth(2)
+        _cap.setframerate(SAMPLE_RATE)
         log.info("local mic: capturing to %s", _cap_env)
     _seen_data = 0
-    _next_report = 50000          # log at >=50KB, then every 50KB
+    _next_report = 50000  # log at >=50KB, then every 50KB
     _last_data_t = time.monotonic()
     _t_open = time.monotonic()
     _first_data_logged = False
@@ -708,12 +739,15 @@ async def run_interaction_local(system_prompt, trigger_text,
         sources call this so the two paths are byte-identical past the source."""
         nonlocal _seen_data, _next_report, _last_data_t, _first_data_logged, _speech_reported, _mic_acc
         if _cap:
-            try: _cap.writeframes(data)
-            except Exception: pass
+            try:
+                _cap.writeframes(data)
+            except Exception:
+                pass
         _now = time.monotonic()
         if _now - _last_data_t > 3.0:
-            log.warning("local mic: trickle - no audio data for %.1fs (total %d bytes)",
-                        _now - _last_data_t, _seen_data)
+            log.warning(
+                "local mic: trickle - no audio data for %.1fs (total %d bytes)", _now - _last_data_t, _seen_data
+            )
         _last_data_t = _now
         if not _first_data_logged:
             log.info("local mic: first audio data after %.1fs", _now - _t_open)
@@ -760,18 +794,21 @@ async def run_interaction_local(system_prompt, trigger_text,
         ffmpeg; 'http' uses the AD410's native getAudio intercom (zero-RTSP, needs
         DOORMAN_DOORBELL_HOST/USER/PASSWORD). Both feed the same chunk handler so
         VAD/endpoint/STT behave identically."""
-        mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
-        if mic_source == 'http':
-            log.info("local mic: AD410 HTTP getAudio source (zero-RTSP, gain=%.0fx limiter=%s)",
-                     mic_gain, mic_limiter)
+        mic_source = str(cfg.get("DOORMAN_MIC_SOURCE", "relay") or "relay").strip().lower()
+        if mic_source == "http":
+            log.info("local mic: AD410 HTTP getAudio source (zero-RTSP, gain=%.0fx limiter=%s)", mic_gain, mic_limiter)
             await mic_loop_http()
             return
-        mic_rtsp = cfg.get('DOORMAN_MIC_RTSP') or cfg.get('CAM_MIC_RTSP')
+        mic_rtsp = cfg.get("DOORMAN_MIC_RTSP") or cfg.get("CAM_MIC_RTSP")
         if not mic_rtsp:
             log.warning("local mic: no DOORMAN_MIC_RTSP/CAM_MIC_RTSP configured; mic disabled")
             return
-        log.info("local mic: opening RTSP source %s (gain=%.0fx limiter=%s)",
-                 (mic_rtsp or '').split('@')[-1], mic_gain, mic_limiter)
+        log.info(
+            "local mic: opening RTSP source %s (gain=%.0fx limiter=%s)",
+            (mic_rtsp or "").split("@")[-1],
+            mic_gain,
+            mic_limiter,
+        )
         proc = await ab.open_mic_ffmpeg(mic_rtsp, gain=mic_gain, limiter=mic_limiter)
         if proc is None:
             log.warning("local mic: RTSP audio failed to open after %.1fs", time.monotonic() - _t_open)
@@ -786,8 +823,8 @@ async def run_interaction_local(system_prompt, trigger_text,
         # words come through. Bounded by _max_reopens so a dead source can't loop
         # forever. The endpointer's wall-clock gap detection (same commit) makes the
         # residual sub-limit gaps SPLIT an utterance instead of merging two.
-        _stall_limit_s = float(cfg.get('DOORMAN_LOCAL_MIC_STALL_LIMIT_S', 5.0))
-        _max_reopens = int(cfg.get('DOORMAN_LOCAL_MIC_MAX_REOPENS', 8))
+        _stall_limit_s = float(cfg.get("DOORMAN_LOCAL_MIC_STALL_LIMIT_S", 5.0))
+        _max_reopens = int(cfg.get("DOORMAN_LOCAL_MIC_MAX_REOPENS", 8))
         _reopens = 0
         try:
             while not stop_ev.is_set():
@@ -806,10 +843,16 @@ async def run_interaction_local(system_prompt, trigger_text,
                 try:
                     data = await asyncio.wait_for(proc.stdout.read(3200), timeout=_stall_limit_s)
                 except asyncio.TimeoutError:
-                    log.warning("local mic: STALLED >%.1fs with no audio data -> reopening ffmpeg pull (reopen %d, total %d bytes)",
-                                _stall_limit_s, _reopens + 1, _seen_data)
-                    try: proc.kill()
-                    except Exception: pass
+                    log.warning(
+                        "local mic: STALLED >%.1fs with no audio data -> reopening ffmpeg pull (reopen %d, total %d bytes)",
+                        _stall_limit_s,
+                        _reopens + 1,
+                        _seen_data,
+                    )
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     proc = None
                     _reopens += 1
                     if _reopens > _max_reopens:
@@ -818,15 +861,23 @@ async def run_interaction_local(system_prompt, trigger_text,
                     continue
                 except Exception as e:
                     log.warning("local mic: read error %s -> reopening ffmpeg pull", str(e)[:80])
-                    try: proc.kill()
-                    except Exception: pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     proc = None
                     _reopens += 1
                     continue
                 if not data:
-                    log.warning("local mic: ffmpeg EOF -> reopening ffmpeg pull (reopen %d, total %d bytes)", _reopens + 1, _seen_data)
-                    try: proc.kill()
-                    except Exception: pass
+                    log.warning(
+                        "local mic: ffmpeg EOF -> reopening ffmpeg pull (reopen %d, total %d bytes)",
+                        _reopens + 1,
+                        _seen_data,
+                    )
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     proc = None
                     _reopens += 1
                     if _reopens > _max_reopens:
@@ -837,8 +888,10 @@ async def run_interaction_local(system_prompt, trigger_text,
         except asyncio.CancelledError:
             pass
         finally:
-            try: proc.kill()
-            except Exception: pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     async def mic_loop_http():
         """AD410 native HTTP getAudio mic (DOORMAN_MIC_SOURCE=http). Zero-RTSP:
@@ -849,8 +902,7 @@ async def run_interaction_local(system_prompt, trigger_text,
         activity behave identically. Gain + limiter are applied (the door mic is
         quiet). Reopen/stall recovery lives inside ab.getaudio_chunks()."""
         log.info("local mic: getAudio stream up; streaming to endpointer")
-        gen = ab.getaudio_chunks(cfg, stop_ev,
-                                 gain=mic_gain, limiter=mic_limiter)
+        gen = ab.getaudio_chunks(cfg, stop_ev, gain=mic_gain, limiter=mic_limiter)
         try:
             async for chunk in gen:
                 await process_local_audio(chunk)
@@ -873,7 +925,7 @@ async def run_interaction_local(system_prompt, trigger_text,
         except Exception as e:
             log.warning("local stt failed: %s", e)
             return
-        text = (stt.get('text') or '').strip()
+        text = (stt.get("text") or "").strip()
         if not text:
             log.info("local stt: silence/empty")
             return
@@ -885,11 +937,10 @@ async def run_interaction_local(system_prompt, trigger_text,
         # and before activity.mark() so noise does not reset the idle clock.
         # (Parakeet has no such field -> None -> gate is a no-op, its empty result
         # already covers the common case.)
-        nsp = stt.get('no_speech_prob')
-        max_nsp = float(cfg.get('DOORMAN_LOCAL_STT_MAX_NSP', 0.25))
+        nsp = stt.get("no_speech_prob")
+        max_nsp = float(cfg.get("DOORMAN_LOCAL_STT_MAX_NSP", 0.25))
         if nsp is not None and nsp > max_nsp:
-            log.info("local stt: dropped low-confidence speech '%s' "
-                     "(no_speech_prob=%.3f > %.2f)", text, nsp, max_nsp)
+            log.info("local stt: dropped low-confidence speech '%s' (no_speech_prob=%.3f > %.2f)", text, nsp, max_nsp)
             return
         # Real visitor audio only: mark activity AFTER the empty check, so ambient
         # noise that the endpointer flags but STT reads as silence does NOT reset
@@ -903,18 +954,16 @@ async def run_interaction_local(system_prompt, trigger_text,
         # ('auto' -> 'en' engine default; 'es' -> 'es' engine for an all-Spanish
         # household). Per-utterance switching needs a language detector
         # (out of scope for the 2-language scope).
-        lang = (stt.get('language') or '').strip() \
-               or (cfg.get('DOORMAN_LOCAL_LANG_FALLBACK', 'auto') or 'en')
-        if lang.lower() in ('auto', 'default'):
-            lang = 'en'
-        speaking._lang = lang            # TTS engine follows the chosen language
+        lang = (stt.get("language") or "").strip() or (cfg.get("DOORMAN_LOCAL_LANG_FALLBACK", "auto") or "en")
+        if lang.lower() in ("auto", "default"):
+            lang = "en"
+        speaking._lang = lang  # TTS engine follows the chosen language
         log.info("[visitor said] %s (%s)", text, lang)
-        _tr.msg('visitor', text)
+        _tr.msg("visitor", text)
         try:
-            reply, new_hist = await brain_turn(sysp, history, text, cfg,
-                                               activity=activity)
+            reply, new_hist = await brain_turn(sysp, history, text, cfg, activity=activity)
             history.extend(new_hist)
-            if len(history) > 24:      # cap: keep the recent window
+            if len(history) > 24:  # cap: keep the recent window
                 del history[:-24]
         except Exception as e:
             log.warning("local brain failed: %s", e)
@@ -922,23 +971,21 @@ async def run_interaction_local(system_prompt, trigger_text,
         if not reply:
             return
         log.info("[doorman said] %s", reply[:120])
-        _tr.msg('doorman', reply)
+        _tr.msg("doorman", reply)
         try:
             await synthesize(reply, cfg, audio_q, speaking, activity=activity)
         except Exception as e:
             log.warning("local tts failed: %s", e)
 
     mic_task = asyncio.create_task(mic_loop())
-    log.info("local interaction starting (max %ss): %s",
-             duration_s, trigger_text[:80])
+    log.info("local interaction starting (max %ss): %s", duration_s, trigger_text[:80])
     # Prime: the trigger text IS the first brain user turn (greeting). EN clone.
-    speaking._lang = 'en'
+    speaking._lang = "en"
     try:
-        reply, new_hist = await brain_turn(sysp, history, trigger_text, cfg,
-                                           activity=activity)
+        reply, new_hist = await brain_turn(sysp, history, trigger_text, cfg, activity=activity)
         history.extend(new_hist)
         if reply:
-            _tr.msg('doorman', reply)
+            _tr.msg("doorman", reply)
             await synthesize(reply, cfg, audio_q, speaking, activity=activity)
     except Exception as e:
         log.warning("local prime failed: %s", e)
@@ -949,7 +996,7 @@ async def run_interaction_local(system_prompt, trigger_text,
     # ffmpeg mic open + talkback settle + the visitor's first words don't race
     # the idle timer. The gemini path doesn't need this (it rides the already-
     # connected WebRTC track); the local path opens a separate RTSP stream.
-    grace_s = min(float(cfg.get('DOORMAN_LOCAL_MIC_GRACE_S', 10.0)), duration_s - 5.0)
+    grace_s = min(float(cfg.get("DOORMAN_LOCAL_MIC_GRACE_S", 10.0)), duration_s - 5.0)
     try:
         try:
             if idle_timeout_s:
@@ -959,8 +1006,7 @@ async def run_interaction_local(system_prompt, trigger_text,
                         continue
                     idle = await activity.idle_seconds()
                     if idle >= idle_timeout_s:
-                        log.info("idle for %.0fs >= %ss, ending local interaction",
-                                 idle, idle_timeout_s)
+                        log.info("idle for %.0fs >= %ss, ending local interaction", idle, idle_timeout_s)
                         break
                     if (time.monotonic() - interaction_start) >= duration_s:
                         break
@@ -981,7 +1027,7 @@ async def run_interaction_local(system_prompt, trigger_text,
         raise
     finally:
         log.info("ending local interaction")
-        _tr.end_session(status='ended')
+        _tr.end_session(status="ended")
         mic_task.cancel()
         try:
             await asyncio.wait_for(asyncio.gather(mic_task, return_exceptions=True), timeout=2)

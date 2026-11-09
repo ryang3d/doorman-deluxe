@@ -20,11 +20,12 @@ The animal one-liner pools (animal_cat_lines, animal_dog_lines) and the
 generic line are plain text with no tokens; the pools are newline-delimited
 (one greeting per line).
 """
-import json, os
+
+import json
+import os
 import doorman_config as _dc
 
-KEYS = ('system', 'animal', 'animal_cat_lines', 'animal_dog_lines',
-        'animal_generic_line', 'trigger', 'local_notes')
+KEYS = ("system", "animal", "animal_cat_lines", "animal_dog_lines", "animal_generic_line", "trigger", "local_notes")
 
 SYSTEM_PROMPT_DEFAULT = """You are Doorman, the AI voice assistant at the front door of a private home. You speak to a visitor through a doorbell speaker and hear them through the doorbell microphone. You are the homeowner's representative at the door.
 You already know you are the Doorman - do NOT introduce yourself by name or repeat 'I am Doorman / the front-door assistant'. Get straight to the point; a single 'Hello' or 'Hi there, how can I help you?' is the whole opening.
@@ -77,42 +78,44 @@ LOCAL_NOTES_DEFAULT = (
 # Animal one-liner pools. Stored as newline-delimited strings (one greeting per
 # line) so the store stays all-string and the UI reuses the same textarea. These
 # are the exact current values from doorman_prompt.ANIMAL_LINES / _ANIMAL_LINE_GENERIC.
-ANIMAL_CAT_LINES_DEFAULT = "\n".join([
-    "Oh, a kitty at the door! Here kitty kitty, you're not supposed to be in here.",
-    "Scram, kitty cat! Nice to see you but the door's not open for the feline.",
-    "Well well, a cat on the front porch. I hope you brought a little greeting for me.",
-    "Oh my, a little cat has wandered in! Do you mind me saying hi?",
-    "I see a cat at the door! Do you come here often?",
-    "A cat at the front door! I can't open for a feline but I can say hello.",
-])
-
-ANIMAL_DOG_LINES_DEFAULT = "\n".join([
-    "Well hello there, you big friendly doggy! Who's a good boy?",
-    "A dog at the front door! You're such a good boy, come to say hi.",
-    "Hey, a dog has stopped by! I hope you brought a nice greeting for me.",
-    "Oh, a pup at the door! Do you mind me saying hello to you?",
-    "Well, well, a dog has wandered in! I can't open the door but I can say hi.",
-    "A nice big doggy at the door! You look like a good friend.",
-])
-
-ANIMAL_GENERIC_LINE_DEFAULT = (
-    "Oh, I see a little visitor at the door! I can say hi but I can't open for you."
+ANIMAL_CAT_LINES_DEFAULT = "\n".join(
+    [
+        "Oh, a kitty at the door! Here kitty kitty, you're not supposed to be in here.",
+        "Scram, kitty cat! Nice to see you but the door's not open for the feline.",
+        "Well well, a cat on the front porch. I hope you brought a little greeting for me.",
+        "Oh my, a little cat has wandered in! Do you mind me saying hi?",
+        "I see a cat at the door! Do you come here often?",
+        "A cat at the front door! I can't open for a feline but I can say hello.",
+    ]
 )
 
+ANIMAL_DOG_LINES_DEFAULT = "\n".join(
+    [
+        "Well hello there, you big friendly doggy! Who's a good boy?",
+        "A dog at the front door! You're such a good boy, come to say hi.",
+        "Hey, a dog has stopped by! I hope you brought a nice greeting for me.",
+        "Oh, a pup at the door! Do you mind me saying hello to you?",
+        "Well, well, a dog has wandered in! I can't open the door but I can say hi.",
+        "A nice big doggy at the door! You look like a good friend.",
+    ]
+)
+
+ANIMAL_GENERIC_LINE_DEFAULT = "Oh, I see a little visitor at the door! I can say hi but I can't open for you."
+
 DEFAULTS = {
-    'system': SYSTEM_PROMPT_DEFAULT,
-    'animal': ANIMAL_PROMPT_DEFAULT,
-    'animal_cat_lines': ANIMAL_CAT_LINES_DEFAULT,
-    'animal_dog_lines': ANIMAL_DOG_LINES_DEFAULT,
-    'animal_generic_line': ANIMAL_GENERIC_LINE_DEFAULT,
-    'trigger': TRIGGER_PROMPT_DEFAULT,
-    'local_notes': LOCAL_NOTES_DEFAULT,
+    "system": SYSTEM_PROMPT_DEFAULT,
+    "animal": ANIMAL_PROMPT_DEFAULT,
+    "animal_cat_lines": ANIMAL_CAT_LINES_DEFAULT,
+    "animal_dog_lines": ANIMAL_DOG_LINES_DEFAULT,
+    "animal_generic_line": ANIMAL_GENERIC_LINE_DEFAULT,
+    "trigger": TRIGGER_PROMPT_DEFAULT,
+    "local_notes": LOCAL_NOTES_DEFAULT,
 }
 
 
 def _path():
-    d = (_dc.load().get('DOORMAN_DATA_DIR') or '/data')
-    return os.path.join(d, 'prompts.json')
+    d = _dc.load().get("DOORMAN_DATA_DIR") or "/data"
+    return os.path.join(d, "prompts.json")
 
 
 def defaults():
@@ -152,7 +155,7 @@ def lines_of(key):
 
     Used for the animal one-liner pools so blank lines in the editor don't
     become empty greetings. Falls back to the built-in default if unset."""
-    text = get(key) or ''
+    text = get(key) or ""
     return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
@@ -166,7 +169,7 @@ def save(updates):
         if k in KEYS and isinstance(v, str):
             data[k] = v
             written.append(k)
-    with open(p, 'w') as f:
+    with open(p, "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return written
 
@@ -181,7 +184,7 @@ def reset(key):
     data = _read_file()
     if key in data:
         del data[key]
-        with open(p, 'w') as f:
+        with open(p, "w") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     return False

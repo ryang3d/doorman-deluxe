@@ -8,88 +8,97 @@ module-level "current session" is unambiguous. Both the Gemini loop
 same spots they already log. Completed sessions append one JSON object per line
 to <DOORMAN_DATA_DIR>/transcripts/sessions.jsonl.
 """
-import json, os, time
+
+import json
+import os
+import time
 from datetime import datetime, timezone
 
 import doorman_config as _dc
 
-_CURRENT = None      # active session dict, or None
-_START_MONO = None   # monotonic start time of the active session (for duration)
+_CURRENT = None  # active session dict, or None
+_START_MONO = None  # monotonic start time of the active session (for duration)
+
 
 def _data_dir():
-    return (_dc.load().get('DOORMAN_DATA_DIR') or '/data')
+    return _dc.load().get("DOORMAN_DATA_DIR") or "/data"
+
 
 def _jsonl_path():
-    d = os.path.join(_data_dir(), 'transcripts')
+    d = os.path.join(_data_dir(), "transcripts")
     os.makedirs(d, exist_ok=True)
-    return os.path.join(d, 'sessions.jsonl')
+    return os.path.join(d, "sessions.jsonl")
+
 
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
-def begin_session(trigger='person', name=None, engine='gemini',
-                  doorbell=False, label=None, frigate_event_id=None):
+
+def begin_session(trigger="person", name=None, engine="gemini", doorbell=False, label=None, frigate_event_id=None):
     """Start a session; returns the session dict. Idempotent-ish: overwrites."""
     global _CURRENT, _START_MONO
     _CURRENT = {
-        'session_id': time.strftime('%Y%m%d-%H%M%S') + '-' +
-                      '%04x' % (time.time_ns() % 65536),
-        'started_at': _now_iso(),
-        'trigger': trigger,
-        'label': label,
-        'doorbell': bool(doorbell),
-        'recognized_name': name,
-        'engine': engine,
-        'snapshot': None,
-        'frigate_event_id': frigate_event_id,
-        'messages': [],
-        'status': 'active',
-        'ended_at': None,
-        'duration_s': None,
+        "session_id": time.strftime("%Y%m%d-%H%M%S") + "-" + "%04x" % (time.time_ns() % 65536),
+        "started_at": _now_iso(),
+        "trigger": trigger,
+        "label": label,
+        "doorbell": bool(doorbell),
+        "recognized_name": name,
+        "engine": engine,
+        "snapshot": None,
+        "frigate_event_id": frigate_event_id,
+        "messages": [],
+        "status": "active",
+        "ended_at": None,
+        "duration_s": None,
     }
     _START_MONO = time.monotonic()
     return _CURRENT
 
+
 def current():
     return _CURRENT
+
 
 def active_session():
     """Snapshot of the live session (for the UI) or None."""
     if _CURRENT is None:
         return None
     s = dict(_CURRENT)
-    s['messages'] = list(_CURRENT['messages'])
-    s['message_count'] = len(_CURRENT['messages'])
+    s["messages"] = list(_CURRENT["messages"])
+    s["message_count"] = len(_CURRENT["messages"])
     return s
+
 
 def msg(role, text, kind=None):
     """Append one transcript line. role: visitor|doorman|tool|system."""
     if _CURRENT is None:
         return
-    _CURRENT['messages'].append({'ts': _now_iso(), 'role': role,
-                                 'text': text, 'kind': kind})
+    _CURRENT["messages"].append({"ts": _now_iso(), "role": role, "text": text, "kind": kind})
 
-def end_session(status='ended', error=None):
+
+def end_session(status="ended", error=None):
     """Finalize + persist the current session, then clear it."""
     global _CURRENT, _START_MONO
     if _CURRENT is None:
         return None
-    _CURRENT['ended_at'] = _now_iso()
-    _CURRENT['status'] = status
+    _CURRENT["ended_at"] = _now_iso()
+    _CURRENT["status"] = status
     if error:
-        _CURRENT['error'] = error
+        _CURRENT["error"] = error
     # Record elapsed wall time (monotonic) so the UI can show a duration.
     if _START_MONO is not None:
-        _CURRENT['duration_s'] = round(time.monotonic() - _START_MONO, 3)
+        _CURRENT["duration_s"] = round(time.monotonic() - _START_MONO, 3)
         _START_MONO = None
     s = _CURRENT
     _CURRENT = None
     try:
-        with open(_jsonl_path(), 'a') as f:
-            f.write(json.dumps(s, ensure_ascii=False) + '\n')
+        with open(_jsonl_path(), "a") as f:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
     except Exception:
         pass
     return s
+
 
 def _history_rows():
     """All completed sessions as summary dicts, newest-first."""
@@ -105,19 +114,21 @@ def _history_rows():
                     o = json.loads(line)
                 except Exception:
                     continue
-                rows.append({
-                    'session_id': o.get('session_id'),
-                    'started_at': o.get('started_at'),
-                    'trigger': o.get('trigger'),
-                    'label': o.get('label'),
-                    'recognized_name': o.get('recognized_name'),
-                    'engine': o.get('engine'),
-                    'duration_s': o.get('duration_s'),
-                    'message_count': len(o.get('messages', [])),
-                    'has_snapshot': bool(o.get('snapshot')),
-                    'frigate_event_id': o.get('frigate_event_id'),
-                })
-    rows.sort(key=lambda r: r['started_at'] or '', reverse=True)
+                rows.append(
+                    {
+                        "session_id": o.get("session_id"),
+                        "started_at": o.get("started_at"),
+                        "trigger": o.get("trigger"),
+                        "label": o.get("label"),
+                        "recognized_name": o.get("recognized_name"),
+                        "engine": o.get("engine"),
+                        "duration_s": o.get("duration_s"),
+                        "message_count": len(o.get("messages", [])),
+                        "has_snapshot": bool(o.get("snapshot")),
+                        "frigate_event_id": o.get("frigate_event_id"),
+                    }
+                )
+    rows.sort(key=lambda r: r["started_at"] or "", reverse=True)
     return rows
 
 
@@ -128,7 +139,8 @@ def load_history(limit=50, offset=0):
     row count, so callers can build pagination without a second read.
     """
     rows = _history_rows()
-    return {'sessions': rows[offset:offset + limit], 'total': len(rows)}
+    return {"sessions": rows[offset : offset + limit], "total": len(rows)}
+
 
 async def load_history_async(limit=50, offset=0):
     """load_history + a has_clip flag per row (Frigate probe, best-effort).
@@ -137,17 +149,19 @@ async def load_history_async(limit=50, offset=0):
     (the pagination refactor changed load_history to return a dict, not a list —
     keep that contract so /api/history and its callers are unaffected)."""
     import frigate_clips as _clips
+
     d = load_history(limit=limit, offset=offset)
-    for r in d['sessions']:
-        ev = r.get('frigate_event_id')
+    for r in d["sessions"]:
+        ev = r.get("frigate_event_id")
         if not ev:
-            r['has_clip'] = False
+            r["has_clip"] = False
             continue
         try:
-            r['has_clip'] = await _clips.get_event_has_clip(ev)
+            r["has_clip"] = await _clips.get_event_has_clip(ev)
         except Exception:
-            r['has_clip'] = False
+            r["has_clip"] = False
     return d
+
 
 def load_session(session_id):
     p = _jsonl_path()
@@ -162,9 +176,10 @@ def load_session(session_id):
                 o = json.loads(line)
             except Exception:
                 continue
-            if o.get('session_id') == session_id:
+            if o.get("session_id") == session_id:
                 return o
     return None
+
 
 def _remove_snapshot(path):
     if path and os.path.exists(path):
@@ -173,15 +188,17 @@ def _remove_snapshot(path):
         except OSError:
             pass
 
+
 def _write_jsonl(rows):
     """Atomic rewrite of sessions.jsonl (temp file + rename). Safe in-process:
     the UI and listeners share this process/event loop."""
     p = _jsonl_path()
-    tmp = p + '.tmp'
-    with open(tmp, 'w') as f:
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
         for r in rows:
-            f.write(r + '\n')
+            f.write(r + "\n")
     os.replace(tmp, p)
+
 
 def _read_lines():
     p = _jsonl_path()
@@ -194,6 +211,7 @@ def _read_lines():
                     rows.append(line)
     return rows
 
+
 def delete_session(session_id):
     """Remove one persisted session (JSONL row + its snapshot file).
     Returns True if a session with that id was removed, False if not found.
@@ -205,15 +223,16 @@ def delete_session(session_id):
         except Exception:
             kept.append(line)
             continue
-        if o.get('session_id') == session_id:
+        if o.get("session_id") == session_id:
             found = True
-            _remove_snapshot(o.get('snapshot'))
+            _remove_snapshot(o.get("snapshot"))
         else:
             kept.append(line)
     if not found:
         return False
     _write_jsonl(kept)
     return True
+
 
 def delete_all_sessions():
     """Remove every persisted session and its snapshots. Returns count removed."""
@@ -225,33 +244,36 @@ def delete_all_sessions():
         except Exception:
             continue
         n += 1
-        _remove_snapshot(o.get('snapshot'))
+        _remove_snapshot(o.get("snapshot"))
     _write_jsonl([])
     return n
+
 
 async def capture_session_snapshot(cfg, session_id):
     """Best-effort thumbnail at session start; never raises, never blocks the
     greeting. Writes to <DOORMAN_DATA_DIR>/snapshots/<id>.jpg."""
     try:
         import doorman_tools
+
         # _frigate_snapshot_bytes wants the creds shape (cfg['frigate_url']), not
         # the raw DOORMAN_* config that ab.load_config() returns. Build it the
         # same way the model's snapshot tool does.
         data = await doorman_tools._frigate_snapshot_bytes(doorman_tools._creds())
         if not data:
             return None
-        d = os.path.join(_data_dir(), 'snapshots')
+        d = os.path.join(_data_dir(), "snapshots")
         os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, session_id + '.jpg')
+        path = os.path.join(d, session_id + ".jpg")
         if isinstance(data, str):
-            data = data.encode('latin1')
-        with open(path, 'wb') as f:
+            data = data.encode("latin1")
+        with open(path, "wb") as f:
             f.write(data)
         if _CURRENT is not None:
-            _CURRENT['snapshot'] = path
+            _CURRENT["snapshot"] = path
         return path
     except Exception:
         return None
+
 
 def export_transcript_text(session):
     """Human-readable transcript for one session dict (as stored in the JSONL).
@@ -260,29 +282,36 @@ def export_transcript_text(session):
     timezone to match the Web UI."""
     from datetime import datetime
     import zoneinfo
+
     try:
-        tz = zoneinfo.ZoneInfo('America/Los_Angeles')
+        tz = zoneinfo.ZoneInfo("America/Los_Angeles")
     except Exception:
         tz = None
-    lines = ['DOORBELL SESSION %s' % session.get('session_id'),
-             'Trigger: %s%s' % (session.get('trigger') or 'unknown',
-                                (' (' + session.get('recognized_name') + ')'
-                                 if session.get('recognized_name') else '')),
-             'Started: %s' % (session.get('started_at') or '?'),
-             '', '- - - - - - - - - -']
-    for m in session.get('messages', []):
-        ts = m.get('ts') or ''
-        t = ''
+    lines = [
+        "DOORBELL SESSION %s" % session.get("session_id"),
+        "Trigger: %s%s"
+        % (
+            session.get("trigger") or "unknown",
+            (" (" + session.get("recognized_name") + ")" if session.get("recognized_name") else ""),
+        ),
+        "Started: %s" % (session.get("started_at") or "?"),
+        "",
+        "- - - - - - - - - -",
+    ]
+    for m in session.get("messages", []):
+        ts = m.get("ts") or ""
+        t = ""
         try:
             d = datetime.fromisoformat(ts)
-            t = d.astimezone(tz).strftime('%H:%M') if tz else d.strftime('%H:%M')
+            t = d.astimezone(tz).strftime("%H:%M") if tz else d.strftime("%H:%M")
         except Exception:
             pass
-        role = str(m.get('role') or 'system').capitalize()
-        who = role + (' · ' + m['kind'] if m.get('kind') else '')
-        text = (m.get('text') or '').strip()
-        lines.append(('%s %s' % (t, who)).ljust(24) + text)
-    return '\n'.join(lines) + '\n'
+        role = str(m.get("role") or "system").capitalize()
+        who = role + (" · " + m["kind"] if m.get("kind") else "")
+        text = (m.get("text") or "").strip()
+        lines.append(("%s %s" % (t, who)).ljust(24) + text)
+    return "\n".join(lines) + "\n"
+
 
 def import_sessions(session_dicts, overwrite=False):
     """Append imported session dicts to the JSONL (atomic rewrite).
@@ -293,15 +322,14 @@ def import_sessions(session_dicts, overwrite=False):
     'snapshot' to a local path before calling this)."""
     new_rows = []
     for s in session_dicts:
-        sid = s.get('session_id')
-        if not sid or not isinstance(s.get('messages'), list):
+        sid = s.get("session_id")
+        if not sid or not isinstance(s.get("messages"), list):
             continue
         new_rows.append((sid, s))
     if not new_rows:
         return [], []
     existing_ids = _known_session_ids()
-    conflicts = sorted({sid for sid, _s in new_rows
-                        if sid in existing_ids and not overwrite})
+    conflicts = sorted({sid for sid, _s in new_rows if sid in existing_ids and not overwrite})
     if conflicts:
         return [], conflicts
     # Split existing rows: valid rows keyed by session_id (replaceable),
@@ -314,7 +342,7 @@ def import_sessions(session_dicts, overwrite=False):
         except Exception:
             keep_lines.append(line)
             continue
-        sid = o.get('session_id')
+        sid = o.get("session_id")
         if sid:
             old[sid] = o
         else:
@@ -325,8 +353,8 @@ def import_sessions(session_dicts, overwrite=False):
         # does not reuse the exact same path (the endpoint has already written
         # the new snapshot to the canonical path before calling this).
         if prev is not None:
-            old_snap = prev.get('snapshot')
-            if old_snap and old_snap != s.get('snapshot'):
+            old_snap = prev.get("snapshot")
+            if old_snap and old_snap != s.get("snapshot"):
                 _remove_snapshot(old_snap)
         old[sid] = s
     out = list(keep_lines)
@@ -343,6 +371,6 @@ def _known_session_ids():
             o = json.loads(line)
         except Exception:
             continue
-        if o.get('session_id'):
-            out.add(o['session_id'])
+        if o.get("session_id"):
+            out.add(o["session_id"])
     return out

@@ -23,8 +23,16 @@ Config via env:
     WHISPER_BEAM_SIZE  default 5
     WHISPER_INITIAL_PROMPT  optional text biasing the model toward a vocabulary
 """
-import io, logging, os, time, wave, tempfile, subprocess
-import fastapi, uvicorn
+
+import io
+import logging
+import os
+import time
+import wave
+import tempfile
+import subprocess
+import fastapi
+import uvicorn
 from fastapi import File, UploadFile
 
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +51,7 @@ DEVICE = os.environ.get("WHISPER_DEVICE", "").lower()
 if DEVICE not in ("cuda", "cpu"):
     try:
         from ctranslate2 import get_cuda_device_count
+
         DEVICE = "cuda" if get_cuda_device_count() > 0 else "cpu"
     except Exception:
         DEVICE = "cpu"
@@ -52,17 +61,23 @@ if not COMPUTE:
     COMPUTE = "float16" if DEVICE == "cuda" else "int8"
 
 log.info("loading faster-whisper %s on %s (%s) ...", MODEL_NAME, DEVICE, COMPUTE)
-from faster_whisper import WhisperModel
+from faster_whisper import WhisperModel  # noqa: E402
+
 MODEL = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE)
+
 
 def _warmup():
     """Run one tiny transcribe so ctranslate2 loads its kernels / allocates the
     first inference buffer; otherwise the real first door utterance pays that cost."""
     try:
-        import wave as _w, struct
+        import wave as _w
+        import struct
+
         p = tempfile.mktemp(suffix=".wav")
         with _w.open(p, "wb") as out:
-            out.setnchannels(1); out.setsampwidth(2); out.setframerate(16000)
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(16000)
             out.writeframes(struct.pack("<" + "h" * 16000, *([0] * 16000)))  # 1.0 s silence
         MODEL.transcribe(p, language=None, beam_size=1)
         os.unlink(p)
@@ -70,10 +85,13 @@ def _warmup():
     except Exception as e:
         log.warning("whisper warmup skipped: %s", e)
 
+
 _warmup()
+
 
 def health():
     return {"ok": True, "device": DEVICE, "model": MODEL_NAME, "engine": "faster-whisper"}
+
 
 def _to_16k_mono_wav(data: bytes) -> str:
     """Return a path to a 16kHz mono s16 WAV, transcoding from any wav/pcm input."""
@@ -90,10 +108,27 @@ def _to_16k_mono_wav(data: bytes) -> str:
     raw = tempfile.mktemp(suffix=".raw")
     with open(raw, "wb") as f:
         f.write(data)
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", raw,
-                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], check=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            raw,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            wav,
+        ],
+        check=True,
+    )
     os.unlink(raw)
     return wav
+
 
 async def transcribe(file: UploadFile = File(...)):
     data = await file.read()
@@ -106,8 +141,7 @@ async def transcribe(file: UploadFile = File(...)):
             language=lang_arg,
             beam_size=BEAM_SIZE,
             vad_filter=VAD_FILTER,
-            vad_parameters={"min_silence_duration_ms": 1500, "threshold": 0.5}
-                           if VAD_FILTER else None,
+            vad_parameters={"min_silence_duration_ms": 1500, "threshold": 0.5} if VAD_FILTER else None,
             condition_on_previous_text=False,  # avoid loop/echo of repeated greetings
             initial_prompt=INITIAL_PROMPT,
         )
@@ -118,12 +152,18 @@ async def transcribe(file: UploadFile = File(...)):
             s = seg.text.strip()
             if s:
                 parts.append(s)
-                try: nsp_list.append(float(seg.no_speech_prob))
-                except Exception: pass
-                try: alp_list.append(float(seg.avg_logprob))
-                except Exception: pass
-                try: lang_list.append(seg.language or "")
-                except Exception: pass
+                try:
+                    nsp_list.append(float(seg.no_speech_prob))
+                except Exception:
+                    pass
+                try:
+                    alp_list.append(float(seg.avg_logprob))
+                except Exception:
+                    pass
+                try:
+                    lang_list.append(seg.language or "")
+                except Exception:
+                    pass
         text = " ".join(parts).strip()
         seconds = round(time.time() - t0, 3)
         lang = (info.language or "") if DETECT_LANG else ""
@@ -134,21 +174,29 @@ async def transcribe(file: UploadFile = File(...)):
         conf = None
         if alp_list:
             import math
+
             conf = round(sum(math.exp(min(a, 0.0)) for a in alp_list) / len(alp_list), 4)
-        return {"text": text, "language": lang, "seconds": seconds,
-                "language_probability": round(getattr(info, "language_probability", 0.0), 3),
-                "no_speech_prob": max_nsp, "confidence": conf}
+        return {
+            "text": text,
+            "language": lang,
+            "seconds": seconds,
+            "language_probability": round(getattr(info, "language_probability", 0.0), 3),
+            "no_speech_prob": max_nsp,
+            "confidence": conf,
+        }
     finally:
         try:
             os.unlink(wav_path)
         except OSError:
             pass
 
+
 def _make_app():
     app = fastapi.FastAPI()
     app.get("/health")(health)
     app.post("/transcribe")(transcribe)
     return app
+
 
 if __name__ == "__main__":
     log.info("whisper STT listening on :%d (model=%s device=%s)", PORT, MODEL_NAME, DEVICE)

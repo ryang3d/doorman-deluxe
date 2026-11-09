@@ -6,45 +6,51 @@ Run (inside the doorman container):
   docker cp tests doorman:/tmp/tests
   docker exec doorman sh -c 'cd /tmp/tests && export PYTHONPATH=/app/src && python test_doorzone_gate.py'
 """
-import asyncio, json, os, sys, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+import asyncio
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import doorman as dm
 import doorman_config as dc
 
-SCALE = 20.0   # fake-seconds per real-second in the listener harness
+SCALE = 20.0  # fake-seconds per real-second in the listener harness
 
 
 def _clear():
     for k in list(os.environ):
-        if k.startswith('DOORMAN_'):
+        if k.startswith("DOORMAN_"):
             del os.environ[k]
 
 
 # ---------------------------------------------------------------- config layer
 def test_gate_default_entity():
     _clear()
-    assert dc.load()['DOORMAN_PERSON_GATE'] == 'binary_sensor.front_patio_motion_zone_person_occupancy'
+    assert dc.load()["DOORMAN_PERSON_GATE"] == "binary_sensor.front_patio_motion_zone_person_occupancy"
     print("PASS gate default = front patio zone occupancy sensor")
 
 
 def test_hold_default_and_override():
     _clear()
-    assert dc.load()['DOORMAN_PERSON_HOLD_S'] == 5.0
-    os.environ['DOORMAN_PERSON_HOLD_S'] = '8'
-    assert dc.load()['DOORMAN_PERSON_HOLD_S'] == 8.0
+    assert dc.load()["DOORMAN_PERSON_HOLD_S"] == 5.0
+    os.environ["DOORMAN_PERSON_HOLD_S"] = "8"
+    assert dc.load()["DOORMAN_PERSON_HOLD_S"] == 8.0
     print("PASS hold default 5.0 + env override numeric")
 
 
 def test_gate_empty_disables():
     _clear()
-    os.environ['DOORMAN_PERSON_GATE'] = ''
-    assert dc.load()['DOORMAN_PERSON_GATE'] == ''
+    os.environ["DOORMAN_PERSON_GATE"] = ""
+    assert dc.load()["DOORMAN_PERSON_GATE"] == ""
     print("PASS empty DOORMAN_PERSON_GATE disables the gate")
 
 
 # ---------------------------------------------------------------- gate state machine
 def test_gate_state_machine():
-    g = dm.DoorZoneGate('binary_sensor.x', 5.0)
+    g = dm.DoorZoneGate("binary_sensor.x", 5.0)
     assert g.satisfied(0.0) is False
     assert g.in_seconds(0.0) == 0.0
     g.mark_on(10.0)
@@ -66,10 +72,10 @@ class _FakeMsg:
 
 
 def _ev(camera, label, etype, event_id, sub=None):
-    after = {'camera': camera, 'label': label, 'id': event_id}
+    after = {"camera": camera, "label": label, "id": event_id}
     if sub is not None:
-        after['sub_label'] = sub
-    return {'type': etype, 'after': after}
+        after["sub_label"] = sub
+    return {"type": etype, "after": after}
 
 
 async def _drive(script, *, hold=5.0, gate=True, personalized=False, cooldown=0.0):
@@ -88,16 +94,22 @@ async def _drive(script, *, hold=5.0, gate=True, personalized=False, cooldown=0.
 
     class _FakePaho:
         instance = None
+
         def __init__(self, *a, **k):
             _FakePaho.instance = self
+
         def username_pw_set(self, *a, **k):
             pass
+
         def connect(self, *a, **k):
             pass
+
         def subscribe(self, topic):
             pass
+
         def loop_forever(self):
             pass
+
         def reconnect_delay_set(self, *a, **k):
             pass
 
@@ -106,16 +118,17 @@ async def _drive(script, *, hold=5.0, gate=True, personalized=False, cooldown=0.
     t0 = real_mono()
     real_client = paho_mod.Client
     real_cool = dm.INTERACTION_COOLDOWN_S
-    gate_obj = dm.DoorZoneGate('binary_sensor.gate', float(hold)) if gate else None
+    gate_obj = dm.DoorZoneGate("binary_sensor.gate", float(hold)) if gate else None
 
     def fake_mono():
         return (real_mono() - t0) * SCALE
+
     time.monotonic = fake_mono
     paho_mod.Client = _FakePaho
     dm.INTERACTION_COOLDOWN_S = float(cooldown)
 
     async def fake_handle(prompt, trigger_text, meta):
-        calls.append((time.monotonic(), meta.get('label'), meta.get('name')))
+        calls.append((time.monotonic(), meta.get("label"), meta.get("name")))
 
     async def advance_to(target):
         cur = time.monotonic()
@@ -124,21 +137,20 @@ async def _drive(script, *, hold=5.0, gate=True, personalized=False, cooldown=0.
 
     try:
         task = asyncio.ensure_future(
-            dm.frigate_event_listener(fake_handle,
-                                      personalized_greeting=personalized,
-                                      gate=gate_obj))
-        await asyncio.sleep(0.05)          # let it connect + subscribe (fake clock advances)
+            dm.frigate_event_listener(fake_handle, personalized_greeting=personalized, gate=gate_obj)
+        )
+        await asyncio.sleep(0.05)  # let it connect + subscribe (fake clock advances)
         client = _FakePaho.instance
         assert client is not None, "listener did not construct its MQTT client"
         for target, action in script:
             await advance_to(target)
-            if action[0] == 'on':
+            if action[0] == "on":
                 gate_obj.mark_on(time.monotonic())
-            elif action[0] == 'off':
+            elif action[0] == "off":
                 gate_obj.mark_off(time.monotonic())
             else:
                 client.on_message(None, None, _FakeMsg(action[1]))
-            await asyncio.sleep(0.02)      # let the loop process the queued item
+            await asyncio.sleep(0.02)  # let the loop process the queued item
         task.cancel()
         try:
             await task
@@ -159,10 +171,10 @@ def _near(t, expected, tol=1.0):
 async def _test_walkby_gated():
     # person new @0; gate on @1 off @3; person still detected (update) @4 -> gate not held
     script = [
-        (0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1'))),
-        (1.0, ('on',)),
-        (3.0, ('off',)),
-        (4.0, ('ev', _ev('front_doorbell', 'person', 'update', 'e1'))),
+        (0.0, ("ev", _ev("front_doorbell", "person", "new", "e1"))),
+        (1.0, ("on",)),
+        (3.0, ("off",)),
+        (4.0, ("ev", _ev("front_doorbell", "person", "update", "e1"))),
     ]
     calls = await _drive(script)
     assert calls == [], calls
@@ -171,36 +183,36 @@ async def _test_walkby_gated():
 
 async def _test_held_visit_triggers_once():
     script = [
-        (0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1'))),
-        (0.5, ('on',)),
-        (5.5, ('ev', _ev('front_doorbell', 'person', 'update', 'e1'))),
-        (6.5, ('ev', _ev('front_doorbell', 'person', 'update', 'e1'))),
+        (0.0, ("ev", _ev("front_doorbell", "person", "new", "e1"))),
+        (0.5, ("on",)),
+        (5.5, ("ev", _ev("front_doorbell", "person", "update", "e1"))),
+        (6.5, ("ev", _ev("front_doorbell", "person", "update", "e1"))),
     ]
     calls = await _drive(script)
-    assert len(calls) == 1 and calls[0][1] == 'person', calls
-    assert _near(calls[0][0], 5.5, 1.5), calls          # fires on first event once held
+    assert len(calls) == 1 and calls[0][1] == "person", calls
+    assert _near(calls[0][0], 5.5, 1.5), calls  # fires on first event once held
     print("PASS held visit (gate on from 0.5s) triggers once, not on the later update")
 
 
 async def _test_gate_off_triggers_on_new_as_today():
-    script = [(0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1')))]
+    script = [(0.0, ("ev", _ev("front_doorbell", "person", "new", "e1")))]
     calls = await _drive(script, gate=False)
-    assert len(calls) == 1 and calls[0][1] == 'person', calls
+    assert len(calls) == 1 and calls[0][1] == "person", calls
     assert _near(calls[0][0], 0.0, 1.0), calls
     print("PASS gate disabled (None): triggers on first detection, as today")
 
 
 async def _test_animal_ignores_gate():
-    script = [(0.0, ('ev', _ev('front_doorbell', 'cat', 'new', 'c1')))]
-    calls = await _drive(script)     # gate present but never turned on
-    assert len(calls) == 1 and calls[0][1] == 'cat', calls
+    script = [(0.0, ("ev", _ev("front_doorbell", "cat", "new", "c1")))]
+    calls = await _drive(script)  # gate present but never turned on
+    assert len(calls) == 1 and calls[0][1] == "cat", calls
     assert _near(calls[0][0], 0.0, 1.0), calls
     print("PASS animal fires immediately even with gate never on")
 
 
 async def _test_face_held_like_person():
-    script = [(0.0, ('ev', _ev('front_doorbell', 'face', 'new', 'f1')))]
-    calls = await _drive(script)     # gate present, never on -> not satisfied
+    script = [(0.0, ("ev", _ev("front_doorbell", "face", "new", "f1")))]
+    calls = await _drive(script)  # gate present, never on -> not satisfied
     assert calls == [], calls
     print("PASS face is gated like person")
 
@@ -208,10 +220,10 @@ async def _test_face_held_like_person():
 async def _test_settled_path_gate_gates():
     # personalized=True, no recognition: settles at 25s grace; gate on only 0-3s
     script = [
-        (0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1'))),
-        (0.0, ('on',)),
-        (3.0, ('off',)),
-        (30.0, ('ev', _ev('front_doorbell', 'person', 'update', 'e1'))),
+        (0.0, ("ev", _ev("front_doorbell", "person", "new", "e1"))),
+        (0.0, ("on",)),
+        (3.0, ("off",)),
+        (30.0, ("ev", _ev("front_doorbell", "person", "update", "e1"))),
     ]
     calls = await _drive(script, personalized=True)
     assert calls == [], calls
@@ -220,12 +232,12 @@ async def _test_settled_path_gate_gates():
 
 async def _test_settled_path_gate_held():
     script = [
-        (0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1'))),
-        (0.0, ('on',)),
-        (30.0, ('ev', _ev('front_doorbell', 'person', 'update', 'e1'))),
+        (0.0, ("ev", _ev("front_doorbell", "person", "new", "e1"))),
+        (0.0, ("on",)),
+        (30.0, ("ev", _ev("front_doorbell", "person", "update", "e1"))),
     ]
     calls = await _drive(script, personalized=True)
-    assert len(calls) == 1 and calls[0][1] == 'person', calls
+    assert len(calls) == 1 and calls[0][1] == "person", calls
     assert _near(calls[0][0], 30.0, 1.5), calls
     print("PASS personalized path: gate held -> triggers at settle time")
 
@@ -234,13 +246,13 @@ async def _test_recognized_name_survives_gate():
     # recognition arrives @2 (event would settle) but gate not yet held (5s from @0);
     # the 25s-grace settle @30 (gate still on) fires WITH the recognized name
     script = [
-        (0.0, ('ev', _ev('front_doorbell', 'person', 'new', 'e1'))),
-        (0.0, ('on',)),
-        (2.0, ('ev', _ev('front_doorbell', 'person', 'update', 'e1', sub=['Ryan', 0.97]))),
-        (30.0, ('ev', _ev('front_doorbell', 'person', 'end', 'e1'))),
+        (0.0, ("ev", _ev("front_doorbell", "person", "new", "e1"))),
+        (0.0, ("on",)),
+        (2.0, ("ev", _ev("front_doorbell", "person", "update", "e1", sub=["Ryan", 0.97]))),
+        (30.0, ("ev", _ev("front_doorbell", "person", "end", "e1"))),
     ]
     calls = await _drive(script, personalized=True)
-    assert len(calls) == 1 and calls[0][2] == 'Ryan', calls
+    assert len(calls) == 1 and calls[0][2] == "Ryan", calls
     print("PASS face recognition name survives the gate (settled path)")
 
 
@@ -257,7 +269,7 @@ class _FakeAioResp:
         return False
 
     async def json(self):
-        return {'entity_id': 'binary_sensor.gate', 'state': self._state}
+        return {"entity_id": "binary_sensor.gate", "state": self._state}
 
 
 class _FakeAioSession:
@@ -284,19 +296,20 @@ async def _seed_case(state, hold=5.0, status=200, raise_exc=False):
     """Run the real _seed_gate_from_state against a fake aiohttp; assert the
     hold clock was set (on) or left unset (off)."""
     import aiohttp
+
     real_cs = aiohttp.ClientSession
     fake = _FakeAioSession(state, status, raise_exc)
     aiohttp.ClientSession = lambda *a, **k: fake
-    g = dm.DoorZoneGate('binary_sensor.gate', hold)
+    g = dm.DoorZoneGate("binary_sensor.gate", hold)
     try:
-        await dm._seed_gate_from_state('http://ha.local:8123/', 'binary_sensor.gate', 'tok', g)
+        await dm._seed_gate_from_state("http://ha.local:8123/", "binary_sensor.gate", "tok", g)
     finally:
         aiohttp.ClientSession = real_cs
     return g, fake
 
 
 async def _test_seed_starts_hold_when_already_on():
-    g, fake = await _seed_case('on')
+    g, fake = await _seed_case("on")
     assert fake.calls == 1, "seed must hit /api/states exactly once"
     assert g._on_since is not None, "seed 'on' must set the hold clock"
     # before the hold window elapses it is not satisfied; after, it is
@@ -306,7 +319,7 @@ async def _test_seed_starts_hold_when_already_on():
 
 
 async def _test_seed_ignores_when_off():
-    g, fake = await _seed_case('off')
+    g, fake = await _seed_case("off")
     assert fake.calls == 1
     assert g._on_since is None, "seed with 'off' must NOT start the hold"
     assert g.satisfied(1e9) is False
@@ -315,13 +328,13 @@ async def _test_seed_ignores_when_off():
 
 async def _test_seed_survives_http_error():
     # a failing GET must not raise and must leave the gate in a known (not-on) state
-    g, fake = await _seed_case('on', raise_exc=True)
+    g, fake = await _seed_case("on", raise_exc=True)
     assert fake.calls == 1
     assert g._on_since is None
     print("PASS seed: HTTP error -> no raise, hold not started")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_gate_default_entity()
     test_hold_default_and_override()
     test_gate_empty_disables()

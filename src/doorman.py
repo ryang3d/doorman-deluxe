@@ -17,7 +17,12 @@ Run (standalone, auto-triggers on door events):
 Run one interaction immediately (for testing, no MQTT wait):
   python src/doorman.py --once 45 --trigger-text "Test: someone at the door."
 """
-import argparse, asyncio, json, logging, sys, os
+
+import argparse
+import asyncio
+import json
+import logging
+import sys
 import audio_bridge as ab
 import doorman_prompt
 import doorman_tools
@@ -26,32 +31,33 @@ import transcripts as _tr
 log = logging.getLogger("doorman")
 
 # Frigate MQTT config (from doorman_config: env > profile files > defaults)
-import doorman_config as _dc
+import doorman_config as _dc  # noqa: E402
+
 _CFG = _dc.load()
-MQTT_HOST = _CFG['MQTT_HOST']
-MQTT_PORT = _CFG['MQTT_PORT']
-FRIGATE_TOPIC = _CFG['FRIGATE_TOPIC']
-FRONT_CAMERA = _CFG['FRONT_CAMERA']      # Frigate camera name for the doorbell
-ANIMAL_LABELS = ('cat', 'dog')  # Frigate labels that get the animal reaction
-                                # (short animal-aware greeting, not a full human convo)
-ANIMAL_MAX_S = _CFG['DOORMAN_ANIMAL_MAX_S']  # hard cap on one animal voice session
+MQTT_HOST = _CFG["MQTT_HOST"]
+MQTT_PORT = _CFG["MQTT_PORT"]
+FRIGATE_TOPIC = _CFG["FRIGATE_TOPIC"]
+FRONT_CAMERA = _CFG["FRONT_CAMERA"]  # Frigate camera name for the doorbell
+ANIMAL_LABELS = ("cat", "dog")  # Frigate labels that get the animal reaction
+# (short animal-aware greeting, not a full human convo)
+ANIMAL_MAX_S = _CFG["DOORMAN_ANIMAL_MAX_S"]  # hard cap on one animal voice session
 # Master on/off for animal reactions, independent of DOORMAN_TRIGGER_MODE. When
 # True, the Frigate listener runs in ANY mode so cat/dog events are seen and each
 # triggers the reaction per DOORMAN_ANIMAL_BEHAVIOR; when False, animal events are
 # ignored regardless of mode (and the Frigate listener only runs if person
 # triggering needs it).
-ANIMAL_REACTIONS = _CFG['DOORMAN_ANIMAL_REACTIONS']
+ANIMAL_REACTIONS = _CFG["DOORMAN_ANIMAL_REACTIONS"]
 IGNORED_FACES = set()  # overridden by amain() from config; recognized names here are fully ignored
-INTERACTION_MAX_S = _CFG['INTERACTION_MAX_S']               # hard cap on one door interaction
-INTERACTION_COOLDOWN_S = _CFG['INTERACTION_COOLDOWN_S']     # min seconds between interactions
-IDLE_TIMEOUT_S = _CFG['IDLE_TIMEOUT_S']                     # end interaction after this many idle seconds
-_keep_warm_task = None                                       # set in amain() when engine=local
+INTERACTION_MAX_S = _CFG["INTERACTION_MAX_S"]  # hard cap on one door interaction
+INTERACTION_COOLDOWN_S = _CFG["INTERACTION_COOLDOWN_S"]  # min seconds between interactions
+IDLE_TIMEOUT_S = _CFG["IDLE_TIMEOUT_S"]  # end interaction after this many idle seconds
+_keep_warm_task = None  # set in amain() when engine=local
 
 
 def load_mqtt_creds():
     """Return (MQTT_USER, MQTT_PASSWORD) from the merged config."""
     cfg = _dc.load()
-    return cfg.get('MQTT_USER'), cfg.get('MQTT_PASSWORD')
+    return cfg.get("MQTT_USER"), cfg.get("MQTT_PASSWORD")
 
 
 # ---------------------------------------------------------------- extended receive loop w/ tools
@@ -60,58 +66,57 @@ async def receive_loop_with_tools(session, audio_out_q, stop_ev, speaking, activ
     when the model requests snapshot_front_door / notify_ryan, execute and reply.
     If `activity` (ActivityClock) is given, it is marked on visitor/AI/tool activity
     so an idle watchdog can end the interaction when the visitor goes silent."""
-    from google.genai import types
     try:
         while not stop_ev.is_set():
             try:
                 async for response in session.receive():
-                    sc = getattr(response, 'server_content', None)
+                    sc = getattr(response, "server_content", None)
                     if sc:
                         # visitor speech heard (resets idle)
-                        it_ = getattr(sc, 'input_transcription', None)
-                        if it_ and getattr(it_, 'text', None):
+                        it_ = getattr(sc, "input_transcription", None)
+                        if it_ and getattr(it_, "text", None):
                             log.info("[visitor said] %s", it_.text)
-                            _tr.msg('visitor', it_.text)
+                            _tr.msg("visitor", it_.text)
                             if activity:
                                 await activity.mark()
-                        iit_ = getattr(sc, 'interim_input_transcription', None)
-                        if iit_ and getattr(iit_, 'text', None) and activity:
+                        iit_ = getattr(sc, "interim_input_transcription", None)
+                        if iit_ and getattr(iit_, "text", None) and activity:
                             await activity.mark()
-                        ot = getattr(sc, 'output_transcription', None)
+                        ot = getattr(sc, "output_transcription", None)
                         if ot and ot.text:
                             log.info("[gemini said] %s", ot.text)
-                            _tr.msg('doorman', ot.text)
+                            _tr.msg("doorman", ot.text)
                             if activity:
                                 await activity.mark()
-                        mt = getattr(sc, 'model_turn', None)
+                        mt = getattr(sc, "model_turn", None)
                         if mt:
-                            for part in (mt.parts or []):
-                                if getattr(part, 'inline_data', None) and part.inline_data.data:
+                            for part in mt.parts or []:
+                                if getattr(part, "inline_data", None) and part.inline_data.data:
                                     data = part.inline_data.data
                                     audio_out_q.put_nowait(bytes(data))
                                     await speaking.mark_active()
                                     if activity:
                                         await activity.mark()
-                        if getattr(sc, 'turn_complete', False):
+                        if getattr(sc, "turn_complete", False):
                             log.info("turn complete")
                             await speaking.mark_idle()
                     # Handle tool calls
-                    tc = getattr(response, 'tool_call', None)
-                    if tc and getattr(tc, 'function_calls', None):
+                    tc = getattr(response, "tool_call", None)
+                    if tc and getattr(tc, "function_calls", None):
                         fns = []
                         for fc in tc.function_calls:
                             log.info("[tool call] %s", fc.name)
-                            _tr.msg('tool', 'tool: %s' % fc.name, kind='tool')
+                            _tr.msg("tool", "tool: %s" % fc.name, kind="tool")
                             if activity:
                                 await activity.mark()
                             fns.append(fc)
                         if fns:
                             from google.genai import types as _t
+
                             results = []
                             for fc in fns:
                                 r = await doorman_tools.run_tool_call(fc)
-                                results.append(_t.FunctionResponse(
-                                    name=fc.name, id=fc.id, response=r))
+                                results.append(_t.FunctionResponse(name=fc.name, id=fc.id, response=r))
                             await session.send_tool_response(function_responses=results)
             except asyncio.CancelledError:
                 return
@@ -131,24 +136,27 @@ class ActivityClock:
     """Tracks the last time there was meaningful activity (visitor speech, AI speech,
     or a tool call) so the interaction can end after an idle period. Used to stop
     listening / wrap up when the visitor goes silent."""
+
     def __init__(self):
         import time
+
         self._last = time.monotonic()
         self._lock = asyncio.Lock()
 
     async def mark(self):
         import time
+
         async with self._lock:
             self._last = time.monotonic()
 
     async def idle_seconds(self):
         import time
+
         async with self._lock:
             return time.monotonic() - self._last
 
 
-async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MAX_S,
-                          idle_timeout_s=None, meta=None):
+async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MAX_S, idle_timeout_s=None, meta=None):
     """Run one full door voice interaction (same proven pipeline as audio_bridge.run_once,
     but with persona + tools). Returns exit code.
 
@@ -156,23 +164,27 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
     speech / AI speech / tool activity (defaults to INTERACTION_MAX_S, i.e. no early cut).
     """
     meta = meta or {}
-    _engine = ('local' if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local'
-               else 'gemini')
-    _label = meta.get('label') or 'person'
-    _trg = ('doorbell' if meta.get('doorbell_pressed')
-            else ('animal' if _label in ANIMAL_LABELS else 'person'))
-    _tr.begin_session(trigger=_trg, name=meta.get('name'), engine=_engine,
-                      doorbell=bool(meta.get('doorbell_pressed')), label=_label,
-                      frigate_event_id=meta.get('frigate_event_id'))
-    _sess_id = _tr.current()['session_id'] if _tr.current() else None
+    _engine = "local" if str(_CFG.get("DOORMAN_VOICE_ENGINE", "gemini")).strip().lower() == "local" else "gemini"
+    _label = meta.get("label") or "person"
+    _trg = "doorbell" if meta.get("doorbell_pressed") else ("animal" if _label in ANIMAL_LABELS else "person")
+    _tr.begin_session(
+        trigger=_trg,
+        name=meta.get("name"),
+        engine=_engine,
+        doorbell=bool(meta.get("doorbell_pressed")),
+        label=_label,
+        frigate_event_id=meta.get("frigate_event_id"),
+    )
+    _sess_id = _tr.current()["session_id"] if _tr.current() else None
     if _sess_id:
         try:
             await _tr.capture_session_snapshot(ab.load_config(), _sess_id)
         except Exception:
             pass
-    if str(_CFG.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
+    if str(_CFG.get("DOORMAN_VOICE_ENGINE", "gemini")).strip().lower() == "local":
         log.info("voice engine: local")
         import voice_local as _vl
+
         # Keep the local STT/TTS models warm between interactions so the first
         # visitor request of the day isn't paying a ~9s (STT) / ~22s (TTS) cold
         # model load on their clock. Started in amain() for the process lifetime;
@@ -180,24 +192,26 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
         global _keep_warm_task
         if _keep_warm_task is None:
             log.warning("keep-warm task not started; starting lazily")
-            _keep_warm_task = asyncio.create_task(
-                _vl.keep_warm_loop(_CFG), name='keep-warm')
-        return await _vl.run_interaction_local(system_prompt, trigger_text,
-                                               duration_s=duration_s,
-                                               idle_timeout_s=idle_timeout_s)
+            _keep_warm_task = asyncio.create_task(_vl.keep_warm_loop(_CFG), name="keep-warm")
+        return await _vl.run_interaction_local(
+            system_prompt, trigger_text, duration_s=duration_s, idle_timeout_s=idle_timeout_s
+        )
     try:
         activity = ActivityClock()  # marks visitor/AI/tool activity; idle watchdog reads it
         cfg = ab.load_config()
         audio_q = asyncio.Queue()
         stop_ev = asyncio.Event()
-        cfg_tools = {'response_modalities': ['AUDIO'],
-                     'system_instruction': {'parts': [{'text': system_prompt}]},
-                     'tools': [{'function_declarations': doorman_tools.tool_declarations()}]}
+        cfg_tools = {
+            "response_modalities": ["AUDIO"],
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "tools": [{"function_declarations": doorman_tools.tool_declarations()}],
+        }
         cfg_tools.update(ab.voice_speech_config(cfg))
 
         from google import genai
-        client = genai.Client(api_key=cfg['GEMINI_API_KEY'])
-        model = 'gemini-3.1-flash-live-preview'
+
+        client = genai.Client(api_key=cfg["GEMINI_API_KEY"])
+        model = "gemini-3.1-flash-live-preview"
         cm = client.aio.live.connect(model=model, config=cfg_tools)
 
         async with cm as session:
@@ -221,8 +235,11 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
                     pc, ws, mic, keep_task, recv_holder = await ab.talkback_connect(cfg, audio_q)
                     break
                 except Exception as e:
-                    log.warning("talkback connect attempt %d/3 failed: %s", attempt + 1,
-                                (str(e).splitlines()[0] if str(e) else e)[:120])
+                    log.warning(
+                        "talkback connect attempt %d/3 failed: %s",
+                        attempt + 1,
+                        (str(e).splitlines()[0] if str(e) else e)[:120],
+                    )
                     if attempt < 2:
                         await asyncio.sleep(8.0)
             if ws is None:
@@ -230,8 +247,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
                 return 2
 
             speaking = ab.SpeakingState()
-            recv_task = asyncio.create_task(
-                receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
+            recv_task = asyncio.create_task(receive_loop_with_tools(session, audio_q, stop_ev, speaking, activity))
             # MIC SOURCE selection. Default is the go2rtc RELAY, not the twoway
             # connection's received-audio track.
             #
@@ -248,24 +264,26 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
             # intercom. Opens NO RTSP session on the camera, so it is the zero-RTSP
             # fallback when the relay wedges under concurrent-stream load. Needs
             # DOORMAN_DOORBELL_HOST/USER/PASSWORD.
-            mic_source = str(cfg.get('DOORMAN_MIC_SOURCE', 'relay') or 'relay').strip().lower()
-            if mic_source == 'webtrack' and recv_holder.get('track') is not None:
+            mic_source = str(cfg.get("DOORMAN_MIC_SOURCE", "relay") or "relay").strip().lower()
+            if mic_source == "webtrack" and recv_holder.get("track") is not None:
                 log.info("mic source: webtrack (twoway received-audio track)")
-                mic_task = asyncio.create_task(
-                    ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
-            elif mic_source == 'http':
+                mic_task = asyncio.create_task(ab.mic_from_webtrack(session, recv_holder, stop_ev, speaking))
+            elif mic_source == "http":
                 log.info("mic source: http (AD410 native getAudio, zero-RTSP)")
-                mic_task = asyncio.create_task(
-                    ab.mic_from_http(session, stop_ev, speaking))
+                mic_task = asyncio.create_task(ab.mic_from_http(session, stop_ev, speaking))
             else:
-                if mic_source == 'webtrack':
-                    log.warning("mic source: webtrack requested but no received-audio "
-                                "track offered; using relay instead")
-                log.info("mic source: relay %s",
-                         str(cfg.get('DOORMAN_MIC_RTSP') or '').split('@')[-1])
+                if mic_source == "webtrack":
+                    log.warning(
+                        "mic source: webtrack requested but no received-audio track offered; using relay instead"
+                    )
+                log.info("mic source: relay %s", str(cfg.get("DOORMAN_MIC_RTSP") or "").split("@")[-1])
                 mic_task = asyncio.create_task(ab.mic_to_gemini(session, stop_ev, speaking))
-            log.info("interaction starting (max %ss%s): %s", duration_s,
-                     f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "", trigger_text)
+            log.info(
+                "interaction starting (max %ss%s): %s",
+                duration_s,
+                f", idle-stop {idle_timeout_s}s" if idle_timeout_s else "",
+                trigger_text,
+            )
             try:
                 await asyncio.sleep(1.0)
                 await session.send_realtime_input(text=trigger_text)
@@ -274,6 +292,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
 
             # Watch for either the hard cap or (if configured) an idle period with no activity.
             import time
+
             interaction_start = time.monotonic()
             try:
                 try:
@@ -309,7 +328,8 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
                 #      still being read so go2rtc processes the close
                 #   4. settle briefly so the camera releases the backchannel
                 #   5. then shut the signaling WS down
-                recv_task.cancel(); mic_task.cancel()
+                recv_task.cancel()
+                mic_task.cancel()
                 try:
                     await asyncio.wait_for(asyncio.gather(recv_task, mic_task, return_exceptions=True), timeout=2)
                 except Exception:
@@ -342,7 +362,7 @@ async def run_interaction(system_prompt, trigger_text, duration_s=INTERACTION_MA
                     pass
         return 0
     finally:
-        _tr.end_session(status='ended')
+        _tr.end_session(status="ended")
 
 
 # ---------------------------------------------------------------- MQTT listener
@@ -352,6 +372,7 @@ class DoorZoneGate:
     mark_on/mark_off are fed by HA state_changed events; satisfied(now) is the
     query the listener asks at trigger time. 'off' or 'unavailable' reset the hold
     (treat both as not-on)."""
+
     def __init__(self, entity_id, hold_s):
         self.entity_id = entity_id
         self.hold_s = float(hold_s)
@@ -392,13 +413,13 @@ def _decide_trigger_action(label, animal_behavior):
       'person'         not an animal (normal human-conversation voice path)
     """
     if label in ANIMAL_LABELS:
-        b = str(animal_behavior or 'voice').strip().lower()
-        if b == 'off':
-            return 'animal-off'
-        if b == 'notify':
-            return 'animal-notify'
-        return 'animal-voice'
-    return 'person'
+        b = str(animal_behavior or "voice").strip().lower()
+        if b == "off":
+            return "animal-off"
+        if b == "notify":
+            return "animal-notify"
+        return "animal-voice"
+    return "person"
 
 
 async def animal_reaction(label, cfg, behavior, event_id=None):
@@ -406,24 +427,29 @@ async def animal_reaction(label, cfg, behavior, event_id=None):
     'voice' run a short, animal-aware voice session. The caller has already
     passed the camera-health gate before invoking this."""
     import doorman_tools as _tools
+
     msg = "A %s is at the front door." % label
     try:
         ok, val = await _tools.notify_ryan(msg)
         log.info("animal notify for %s -> %s", label, val)
     except Exception as e:
         log.warning("animal notify error: %s", e)
-    if str(behavior).lower() != 'voice':
+    if str(behavior).lower() != "voice":
         return
     aprompt = doorman_prompt.build_doorman_prompt(animal_label=label)
     atrigger = doorman_prompt.interaction_trigger_text(label=label, animal=True)
     log.info("animal voice session starting for %s (cap %ss)", label, ANIMAL_MAX_S)
     try:
         await asyncio.wait_for(
-            run_interaction(aprompt, atrigger, duration_s=ANIMAL_MAX_S,
-                            idle_timeout_s=IDLE_TIMEOUT_S,
-                            meta={'label': label, 'name': None,
-                                  'frigate_event_id': event_id}),
-            timeout=ANIMAL_MAX_S + 15)
+            run_interaction(
+                aprompt,
+                atrigger,
+                duration_s=ANIMAL_MAX_S,
+                idle_timeout_s=IDLE_TIMEOUT_S,
+                meta={"label": label, "name": None, "frigate_event_id": event_id},
+            ),
+            timeout=ANIMAL_MAX_S + 15,
+        )
     except asyncio.TimeoutError:
         log.warning("animal interaction overran cap")
 
@@ -434,13 +460,14 @@ def _label_allowed(label, person_trigger, animals_trigger):
     person_trigger. Unknown labels are ignored."""
     if label in ANIMAL_LABELS:
         return bool(animals_trigger)
-    if label in ('person', 'face'):
+    if label in ("person", "face"):
         return bool(person_trigger)
     return False
 
 
-async def frigate_event_listener(handle_event, personalized_greeting=True, gate=None,
-                                 person_trigger=True, animals_trigger=True):
+async def frigate_event_listener(
+    handle_event, personalized_greeting=True, gate=None, person_trigger=True, animals_trigger=True
+):
     """Subscribe to frigate/events; trigger Doorman when a person is at the door.
 
     person_trigger / animals_trigger: which label classes this listener acts on.
@@ -464,6 +491,7 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
       end    sub=['Ryan', 0.95]
     """
     import paho.mqtt.client as mqtt
+
     loop = asyncio.get_event_loop()
     events = asyncio.Queue()
     user, pw = load_mqtt_creds()
@@ -499,28 +527,32 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     # subscription happens in on_connect (fires on first CONNACK inside loop_forever)
     import threading
+
     def run():
         client.loop_forever()
+
     threading.Thread(target=run, daemon=True).start()
 
     import time
+
     # state: event_id -> {'new_ts': monotonic, 'recognized': name-or-None, 'triggered': bool}
     pending = {}
     # How long to wait for Frigate face recognition after a person is detected,
     # before triggering as an unknown visitor. Configurable via
     # DOORMAN_RECOGNIZE_GRACE_S (default 12 s; was hardcoded 25 s).
-    RECOGNIZE_GRACE_S = _dc.load().get('DOORMAN_RECOGNIZE_GRACE_S', 12.0)
+    RECOGNIZE_GRACE_S = _dc.load().get("DOORMAN_RECOGNIZE_GRACE_S", 12.0)
     last_trigger_ts = 0.0
-    fast_fired = set()   # fast-path event_ids already triggered (person/face hold re-checks on updates)
+    fast_fired = set()  # fast-path event_ids already triggered (person/face hold re-checks on updates)
 
     def gate_blocked(label, now):
         """True if a gate is configured, applies to this label, and is not yet held."""
-        if gate is None or label not in ('person', 'face'):
+        if gate is None or label not in ("person", "face"):
             return False
         if gate.satisfied(now):
             return False
-        log.info("door-zone gate: %.1fs/%.1fs held, not triggering (label=%s)",
-                 gate.in_seconds(now), gate.hold_s, label)
+        log.info(
+            "door-zone gate: %.1fs/%.1fs held, not triggering (label=%s)", gate.in_seconds(now), gate.hold_s, label
+        )
         return True
 
     async def _decide(event_id, now, etype=None):
@@ -535,38 +567,37 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         """
         nonlocal last_trigger_ts
         p = pending.get(event_id)
-        if p is None or p.get('triggered'):
+        if p is None or p.get("triggered"):
             return
-        label = p.get('label', 'person')
-        elapsed = now - p['new_ts']
-        settled = (p['name'] is not None) or (etype == 'end') \
-            or (elapsed >= RECOGNIZE_GRACE_S) \
-            or (label in ANIMAL_LABELS)
+        label = p.get("label", "person")
+        elapsed = now - p["new_ts"]
+        settled = (
+            (p["name"] is not None) or (etype == "end") or (elapsed >= RECOGNIZE_GRACE_S) or (label in ANIMAL_LABELS)
+        )
         if not settled:
             return
         if gate_blocked(label, now):
             # not held long enough on the gate; a later update/end/tick can fire
             return
         # Ignored faces: a recognized name on the ignore list gets NO greeting.
-        if p['name'] and p['name'].strip().lower() in IGNORED_FACES:
-            log.info("ignored face %s at the door; no greeting", p['name'])
-            p['triggered'] = True
+        if p["name"] and p["name"].strip().lower() in IGNORED_FACES:
+            log.info("ignored face %s at the door; no greeting", p["name"])
+            p["triggered"] = True
             del pending[event_id]
             return
-        p['triggered'] = True
+        p["triggered"] = True
         if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
-            log.info("trigger debounced (cooldown); recognized=%s", p['name'])
+            log.info("trigger debounced (cooldown); recognized=%s", p["name"])
             return
         last_trigger_ts = now
-        p['fired'] = True
-        recognized = p['name']
+        p["fired"] = True
+        recognized = p["name"]
         log.info("TRIGGER: %s at the door (recognized=%s)", label, recognized)
         trigger_text = doorman_prompt.interaction_trigger_text(
-            recognized_name=recognized, doorbell_pressed=False, label=label)
+            recognized_name=recognized, doorbell_pressed=False, label=label
+        )
         prompt = doorman_prompt.build_doorman_prompt(recognized_name=recognized)
-        await handle_event(prompt, trigger_text,
-                           {'label': label, 'name': recognized,
-                            'frigate_event_id': event_id})
+        await handle_event(prompt, trigger_text, {"label": label, "name": recognized, "frigate_event_id": event_id})
 
     # Ticker so the trigger decision re-checks even when Frigate goes quiet.
     # Frigate only pushes events when a tracked object changes; for a stationary
@@ -580,7 +611,7 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
     async def _ticker():
         while True:
             await asyncio.sleep(TICK_S)
-            await events.put({'tick': True})
+            await events.put({"tick": True})
 
     asyncio.ensure_future(_ticker())
 
@@ -589,38 +620,37 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
         if not isinstance(ev, dict):
             # malformed payload (non-dict); skip, never crash on one bad message
             continue
-        if ev.get('tick'):
+        if ev.get("tick"):
             now = time.monotonic()
             for eid in list(pending.keys()):
                 await _decide(eid, now)
             # expire stale pending entries
-            expired = [eid for eid, p in pending.items()
-                       if p.get('triggered', False) and (now - p['new_ts']) > 60]
+            expired = [eid for eid, p in pending.items() if p.get("triggered", False) and (now - p["new_ts"]) > 60]
             for eid in expired:
                 del pending[eid]
             continue
-        after = ev.get('after') or ev  # tolerate null/absent 'after' (fields at top level)
+        after = ev.get("after") or ev  # tolerate null/absent 'after' (fields at top level)
         if not isinstance(after, dict):
             log.warning("frigate event: non-dict payload skipped: %r", str(ev)[:120])
             continue
-        camera = after.get('camera', '')
-        label = after.get('label', '')
-        etype = ev.get('type', '')
-        event_id = after.get('id', '')
+        camera = after.get("camera", "")
+        label = after.get("label", "")
+        etype = ev.get("type", "")
+        event_id = after.get("id", "")
         if camera != FRONT_CAMERA:
             continue
-        if label not in ('person', 'cat', 'dog', 'face'):
+        if label not in ("person", "cat", "dog", "face"):
             continue
         # Gate by label class so person-triggering and animal-triggering can be
         # enabled/disabled independently (see person_trigger / animals_trigger).
         if not _label_allowed(label, person_trigger, animals_trigger):
             continue
         now = time.monotonic()
-        name = _parse_sub_label(after.get('sub_label'))
+        name = _parse_sub_label(after.get("sub_label"))
 
         # ---- Fast path: personalized greeting OFF -> greet immediately on detection ----
         if not personalized_greeting:
-            if etype in ('new', 'update') and label in ('person', 'face'):
+            if etype in ("new", "update") and label in ("person", "face"):
                 if event_id in fast_fired:
                     continue
                 if gate_blocked(label, now):
@@ -632,54 +662,50 @@ async def frigate_event_listener(handle_event, personalized_greeting=True, gate=
                 fast_fired.add(event_id)
                 log.info("TRIGGER (no recognition wait): %s at the door", label)
                 trigger_text = doorman_prompt.interaction_trigger_text(
-                    recognized_name=None, doorbell_pressed=False, label=label)
+                    recognized_name=None, doorbell_pressed=False, label=label
+                )
                 prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                await handle_event(prompt, trigger_text,
-                                   {'label': label, 'name': None,
-                                    'frigate_event_id': event_id})
-            elif etype == 'new' and label in ANIMAL_LABELS:
+                await handle_event(prompt, trigger_text, {"label": label, "name": None, "frigate_event_id": event_id})
+            elif etype == "new" and label in ANIMAL_LABELS:
                 if now - last_trigger_ts < INTERACTION_COOLDOWN_S:
                     log.info("trigger debounced (cooldown)")
                     continue
                 last_trigger_ts = now
                 log.info("TRIGGER (no recognition wait): %s at the door", label)
                 trigger_text = doorman_prompt.interaction_trigger_text(
-                    recognized_name=None, doorbell_pressed=False, label=label)
+                    recognized_name=None, doorbell_pressed=False, label=label
+                )
                 prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                await handle_event(prompt, trigger_text,
-                                   {'label': label, 'name': None,
-                                    'frigate_event_id': event_id})
+                await handle_event(prompt, trigger_text, {"label": label, "name": None, "frigate_event_id": event_id})
             # expire nothing; simple path
-            expired = [eid for eid, p in pending.items()
-                       if (now - p.get('new_ts', 0)) > 60]
+            expired = [eid for eid, p in pending.items() if (now - p.get("new_ts", 0)) > 60]
             for eid in expired:
                 del pending[eid]
             continue
 
-        if etype == 'new':
+        if etype == "new":
             # start a pending track for this visitor
             if event_id and event_id not in pending:
-                pending[event_id] = {'new_ts': now, 'name': name, 'label': label}
+                pending[event_id] = {"new_ts": now, "name": name, "label": label}
                 log.info("person seen (event %s), waiting for recognition...", event_id[:12])
-        elif etype == 'update':
+        elif etype == "update":
             if event_id in pending:
                 # recognition arrived?
                 if name:
-                    pending[event_id]['name'] = name
+                    pending[event_id]["name"] = name
                     log.info("recognized %s for event %s", name, event_id[:12])
                 # trigger once recognition is known (may be immediate or after several updates)
-        elif etype == 'end':
+        elif etype == "end":
             if event_id in pending:
-                if name and pending[event_id]['name'] is None:
-                    pending[event_id]['name'] = name
-                log.info("event %s ended (name=%s)", event_id[:12], pending[event_id]['name'])
+                if name and pending[event_id]["name"] is None:
+                    pending[event_id]["name"] = name
+                log.info("event %s ended (name=%s)", event_id[:12], pending[event_id]["name"])
 
         # ---- trigger decision for a settled event (fire exactly once per event id) ----
         await _decide(event_id, now, etype)
 
         # expire stale pending entries
-        expired = [eid for eid, p in pending.items()
-                   if p.get('triggered', False) and (now - p['new_ts']) > 60]
+        expired = [eid for eid, p in pending.items() if p.get("triggered", False) and (now - p["new_ts"]) > 60]
         for eid in expired:
             del pending[eid]
 
@@ -697,20 +723,21 @@ def _make_ws_backoff(base_s=5.0, max_s=60.0):
     link keeps the next retry short.
     """
     import random as _random
-    _state = {'n': 0}
+
+    _state = {"n": 0}
 
     def delay():
-        cap = min(max_s, base_s * (2 ** _state['n']))
-        _state['n'] += 1
+        cap = min(max_s, base_s * (2 ** _state["n"]))
+        _state["n"] += 1
         return _random.uniform(0.5 * cap, cap)
 
     def reset():
-        _state['n'] = 0
+        _state["n"] = 0
 
     return delay, reset
 
 
-async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_pressed'):
+async def doorbell_event_listener(handle_event, sensor="binary_sensor.doorbell_pressed"):
     """Subscribe to HA state_changed events and trigger Doorman when the doorbell
     sensor transitions to 'on'.
 
@@ -721,14 +748,18 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
     import asyncio as _aio
     import websockets
     import json as _json
+
     cfg = _dc.load()
-    hass_ws = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
-    token = cfg.get('HASS_TOKEN') or ''
+    hass_ws = (cfg.get("HASS_URL") or "http://<ha-host>:8123").replace("http://", "ws://").replace(
+        "https://", "wss://"
+    ) + "/api/websocket"
+    token = cfg.get("HASS_TOKEN") or ""
     if not token:
         raise RuntimeError("doorbell trigger mode requires HASS_TOKEN (HA long-lived token)")
 
     last_trigger_ts = 0.0
     import time as _time
+
     # The HA WebSocket is long-lived and can drop mid-interaction (default keepalive
     # ping interval is shorter than a voice session -> "keepalive ping timeout").
     # That used to be fatal: ConnectionClosedError propagated out of
@@ -741,20 +772,21 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
     _backoff_delay, _backoff_reset = _make_ws_backoff()
     while True:
         try:
-            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
-                                          ping_interval=30, ping_timeout=60) as ws:
+            async with websockets.connect(
+                hass_ws, max_size=10 * 1024 * 1024, open_timeout=30, ping_interval=30, ping_timeout=60
+            ) as ws:
                 # HA auth handshake
                 msg = _json.loads(await ws.recv())
-                if msg.get('type') != 'auth_required':
+                if msg.get("type") != "auth_required":
                     raise RuntimeError("HA websocket did not ask for auth: %s" % msg)
-                await ws.send(_json.dumps({'type': 'auth', 'access_token': token}))
+                await ws.send(_json.dumps({"type": "auth", "access_token": token}))
                 auth = _json.loads(await ws.recv())
-                if auth.get('type') != 'auth_ok':
+                if auth.get("type") != "auth_ok":
                     raise RuntimeError("HA websocket auth failed: %s" % auth)
                 # subscribe to state_changed
-                await ws.send(_json.dumps({'id': 1, 'type': 'subscribe_events', 'event_type': 'state_changed'}))
+                await ws.send(_json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))
                 sub = _json.loads(await ws.recv())
-                if not sub.get('success'):
+                if not sub.get("success"):
                     raise RuntimeError("subscribe_events failed: %s" % sub)
                 log.info("doorbell listener subscribed to HA state_changed (sensor=%s)", sensor)
                 _backoff_reset()
@@ -765,31 +797,33 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
                         msg = _json.loads(raw)
                     except Exception:
                         continue
-                    ev_type = msg.get('type')
-                    if ev_type == 'event':
-                        ev = msg.get('event', {})
-                        data = ev.get('data', {})
-                        if data.get('entity_id') != sensor:
+                    ev_type = msg.get("type")
+                    if ev_type == "event":
+                        ev = msg.get("event", {})
+                        data = ev.get("data", {})
+                        if data.get("entity_id") != sensor:
                             continue
-                        new_state = (data.get('new_state') or {})
-                        old_state = (data.get('old_state') or {})
-                        n = new_state.get('state')
-                        o = old_state.get('state')
+                        new_state = data.get("new_state") or {}
+                        old_state = data.get("old_state") or {}
+                        n = new_state.get("state")
+                        o = old_state.get("state")
                         now = _time.monotonic()
-                        if n == 'on' and o != 'on' and (now - last_trigger_ts) >= INTERACTION_COOLDOWN_S:
+                        if n == "on" and o != "on" and (now - last_trigger_ts) >= INTERACTION_COOLDOWN_S:
                             last_trigger_ts = now
                             log.info("TRIGGER (doorbell press): %s -> %s", o, n)
                             trigger_text = doorman_prompt.interaction_trigger_text(
-                                recognized_name=None, doorbell_pressed=True, label='person')
+                                recognized_name=None, doorbell_pressed=True, label="person"
+                            )
                             prompt = doorman_prompt.build_doorman_prompt(recognized_name=None)
-                            await handle_event(prompt, trigger_text,
-                                               {'label': 'person', 'name': None,
-                                                'doorbell_pressed': True,
-                                                'frigate_event_id': None})
-                    elif ev_type == 'result' and msg.get('id') == 1:
+                            await handle_event(
+                                prompt,
+                                trigger_text,
+                                {"label": "person", "name": None, "doorbell_pressed": True, "frigate_event_id": None},
+                            )
+                    elif ev_type == "result" and msg.get("id") == 1:
                         pass  # subscription confirmed
-                    elif ev_type == 'ping':
-                        await ws.send(_json.dumps({'type': 'pong', 'id': msg.get('id')}))
+                    elif ev_type == "ping":
+                        await ws.send(_json.dumps({"type": "pong", "id": msg.get("id")}))
         except _aio.CancelledError:
             raise
         except websockets.ConnectionClosed as e:
@@ -803,7 +837,7 @@ async def doorbell_event_listener(handle_event, sensor='binary_sensor.doorbell_p
 
 
 # ---------------------------------------------------------------- door-zone occupancy gate feeder (HA WebSocket)
-async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
+async def doorbell_press_tracker(sensor="binary_sensor.doorbell_pressed"):
     """Always-on listener that records each doorbell press (off->on) AND release
     (on->off) edge into audio_bridge._PRESS_EDGE (single source of truth, so the
     dual-import of doorman.py can't split state). run_interaction's
@@ -817,30 +851,32 @@ async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
     through the person/motion path too. Event-driven over HA WS so it carries no
     IP-ban polling risk. If HASS_TOKEN is missing it exits quietly."""
     import websockets
-    import time as _time
+
     cfg = _dc.load()
-    sensor = sensor or (cfg.get('DOORMAN_DOORBELL_SENSOR') or '').strip()
-    hass_ws = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
-    token = cfg.get('HASS_TOKEN') or ''
+    sensor = sensor or (cfg.get("DOORMAN_DOORBELL_SENSOR") or "").strip()
+    hass_ws = (cfg.get("HASS_URL") or "http://<ha-host>:8123").replace("http://", "ws://").replace(
+        "https://", "wss://"
+    ) + "/api/websocket"
+    token = cfg.get("HASS_TOKEN") or ""
     if not token:
         log.info("press tracker: no HASS_TOKEN; skipping (ring-settle wait disabled)")
         return
     _backoff_delay, _backoff_reset = _make_ws_backoff()
     while True:
         try:
-            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
-                                          ping_interval=30, ping_timeout=60) as ws:
+            async with websockets.connect(
+                hass_ws, max_size=10 * 1024 * 1024, open_timeout=30, ping_interval=30, ping_timeout=60
+            ) as ws:
                 msg = json.loads(await ws.recv())
-                if msg.get('type') != 'auth_required':
+                if msg.get("type") != "auth_required":
                     raise RuntimeError("HA websocket did not ask for auth")
-                await ws.send(json.dumps({'type': 'auth', 'access_token': token}))
+                await ws.send(json.dumps({"type": "auth", "access_token": token}))
                 auth = json.loads(await ws.recv())
-                if auth.get('type') != 'auth_ok':
+                if auth.get("type") != "auth_ok":
                     raise RuntimeError("HA websocket auth failed: %s" % auth)
-                await ws.send(json.dumps({"id": 1, "type": "subscribe_events",
-                                          "event_type": "state_changed"}))
+                await ws.send(json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))
                 sub = json.loads(await ws.recv())
-                if not sub.get('success'):
+                if not sub.get("success"):
                     raise RuntimeError("subscribe failed")
                 log.info("press tracker subscribed to %s", sensor)
                 _backoff_reset()
@@ -850,20 +886,20 @@ async def doorbell_press_tracker(sensor='binary_sensor.doorbell_pressed'):
                         msg = json.loads(raw)
                     except Exception:
                         continue
-                    if msg.get('type') == 'event':
-                        data = msg.get('event', {}).get('data', {})
-                        if data.get('entity_id') != sensor:
+                    if msg.get("type") == "event":
+                        data = msg.get("event", {}).get("data", {})
+                        if data.get("entity_id") != sensor:
                             continue
-                        n = data.get('new_state', {}).get('state')
-                        o = data.get('old_state', {}).get('state')
-                        if n == 'on' and o != 'on':
+                        n = data.get("new_state", {}).get("state")
+                        o = data.get("old_state", {}).get("state")
+                        if n == "on" and o != "on":
                             ab.record_doorbell_press()
                             log.info("press tracker: doorbell press edge recorded")
-                        elif n == 'off' and o == 'on':
+                        elif n == "off" and o == "on":
                             ab.record_doorbell_release()
                             log.info("press tracker: doorbell release edge recorded")
-                    elif msg.get('type') == 'ping':
-                        await ws.send(json.dumps({'type': 'pong', 'id': msg.get('id')}))
+                    elif msg.get("type") == "ping":
+                        await ws.send(json.dumps({"type": "pong", "id": msg.get("id")}))
         except asyncio.CancelledError:
             raise
         except websockets.ConnectionClosed as e:
@@ -885,12 +921,12 @@ async def _seed_gate_from_state(hass_http, sensor, token, gate):
     satisfy the gate. Call this right after each successful subscribe."""
     import aiohttp
     import time as _time
-    url = hass_http.rstrip('/') + '/api/states/' + sensor
-    headers = {'Authorization': 'Bearer ' + token}
+
+    url = hass_http.rstrip("/") + "/api/states/" + sensor
+    headers = {"Authorization": "Bearer " + token}
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers,
-                             timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
                     log.warning("door-zone gate seed: HTTP %s for %s", r.status, sensor)
                     return
@@ -898,9 +934,9 @@ async def _seed_gate_from_state(hass_http, sensor, token, gate):
     except Exception as e:
         log.warning("door-zone gate seed: %s", e)
         return
-    state = (data or {}).get('state')
+    state = (data or {}).get("state")
     now = _time.monotonic()
-    if state == 'on':
+    if state == "on":
         gate.mark_on(now)
         log.info("door-zone gate seed: %s is on -> hold started now", sensor)
     else:
@@ -918,13 +954,14 @@ async def doorzone_gate_listener(gate, sensor=None):
     import websockets
     import json as _json
     import time as _time
+
     cfg = _dc.load()
-    sensor = sensor or (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
+    sensor = sensor or (cfg.get("DOORMAN_PERSON_GATE") or "").strip()
     if not sensor:
         return
-    hass_http = (cfg.get('HASS_URL') or 'http://<ha-host>:8123').rstrip('/')
-    hass_ws = hass_http.replace('http://', 'ws://').replace('https://', 'wss://') + '/api/websocket'
-    token = cfg.get('HASS_TOKEN') or ''
+    hass_http = (cfg.get("HASS_URL") or "http://<ha-host>:8123").rstrip("/")
+    hass_ws = hass_http.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
+    token = cfg.get("HASS_TOKEN") or ""
     if not token:
         log.warning("door-zone gate: no HASS_TOKEN, gate stays unsatisfied")
         return
@@ -933,18 +970,19 @@ async def doorzone_gate_listener(gate, sensor=None):
     _g_delay, _g_reset = _make_ws_backoff()
     while True:
         try:
-            async with websockets.connect(hass_ws, max_size=10 * 1024 * 1024, open_timeout=30,
-                                          ping_interval=30, ping_timeout=60) as ws:
+            async with websockets.connect(
+                hass_ws, max_size=10 * 1024 * 1024, open_timeout=30, ping_interval=30, ping_timeout=60
+            ) as ws:
                 msg = _json.loads(await ws.recv())
-                if msg.get('type') != 'auth_required':
+                if msg.get("type") != "auth_required":
                     raise RuntimeError("HA websocket did not ask for auth: %s" % msg)
-                await ws.send(_json.dumps({'type': 'auth', 'access_token': token}))
+                await ws.send(_json.dumps({"type": "auth", "access_token": token}))
                 auth = _json.loads(await ws.recv())
-                if auth.get('type') != 'auth_ok':
+                if auth.get("type") != "auth_ok":
                     raise RuntimeError("HA websocket auth failed: %s" % auth)
-                await ws.send(_json.dumps({'id': 1, 'type': 'subscribe_events', 'event_type': 'state_changed'}))
+                await ws.send(_json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))
                 sub = _json.loads(await ws.recv())
-                if not sub.get('success'):
+                if not sub.get("success"):
                     raise RuntimeError("subscribe_events failed: %s" % sub)
                 log.info("door-zone gate subscribed: %s", sensor)
                 # Seed the hold from the CURRENT state so a sensor already 'on'
@@ -957,16 +995,16 @@ async def doorzone_gate_listener(gate, sensor=None):
                         m = _json.loads(raw)
                     except Exception:
                         continue
-                    if m.get('type') != 'event':
-                        if m.get('type') == 'ping':
-                            await ws.send(_json.dumps({'type': 'pong', 'id': m.get('id')}))
+                    if m.get("type") != "event":
+                        if m.get("type") == "ping":
+                            await ws.send(_json.dumps({"type": "pong", "id": m.get("id")}))
                         continue
-                    data = m.get('event', {}).get('data', {})
-                    if data.get('entity_id') != sensor:
+                    data = m.get("event", {}).get("data", {})
+                    if data.get("entity_id") != sensor:
                         continue
-                    ns = (data.get('new_state') or {}).get('state')
+                    ns = (data.get("new_state") or {}).get("state")
                     now = _time.monotonic()
-                    if ns == 'on':
+                    if ns == "on":
                         gate.mark_on(now)
                     else:  # off / unavailable / anything else resets the hold
                         gate.mark_off(now)
@@ -986,11 +1024,9 @@ async def doorzone_gate_listener(gate, sensor=None):
 async def amain(args):
     if args.once:
         # Run a single interaction immediately (testing), no MQTT wait.
-        prompt = doorman_prompt.build_doorman_prompt(
-            recognized_name=getattr(args, 'recognized', None))
+        prompt = doorman_prompt.build_doorman_prompt(recognized_name=getattr(args, "recognized", None))
         trigger = args.trigger_text or doorman_prompt.interaction_trigger_text()
-        return await run_interaction(prompt, trigger, duration_s=args.once,
-                                     idle_timeout_s=IDLE_TIMEOUT_S)
+        return await run_interaction(prompt, trigger, duration_s=args.once, idle_timeout_s=IDLE_TIMEOUT_S)
 
     # Full service: listen for door events.
     # Personalized greeting config: false -> greet immediately (no recognition wait).
@@ -999,34 +1035,35 @@ async def amain(args):
     # day aren't paying a cold model load (~9s STT / ~22s TTS) on their clock.
     # Process-lifetime task; started before any listener so it's hot early. No-op
     # for the gemini engine (its STT/TTS live in the model API, not on this box).
-    if str(cfg.get('DOORMAN_VOICE_ENGINE', 'gemini')).strip().lower() == 'local':
+    if str(cfg.get("DOORMAN_VOICE_ENGINE", "gemini")).strip().lower() == "local":
         import voice_local as _vl
+
         global _keep_warm_task
-        _keep_warm_task = asyncio.create_task(_vl.keep_warm_loop(cfg),
-                                              name='keep-warm')
-    personalized = bool(cfg.get('DOORMAN_PERSONALIZED_GREETING', True))
+        _keep_warm_task = asyncio.create_task(_vl.keep_warm_loop(cfg), name="keep-warm")
+    personalized = bool(cfg.get("DOORMAN_PERSONALIZED_GREETING", True))
     global IGNORED_FACES
-    IGNORED_FACES = set(cfg.get('DOORMAN_IGNORED_FACES') or set())
-    trigger_mode = str(cfg.get('DOORMAN_TRIGGER_MODE', 'person')).strip().lower()
-    doorbell_sensor = cfg.get('DOORMAN_DOORBELL_SENSOR') or 'binary_sensor.doorbell_pressed'
-    gate_entity = (cfg.get('DOORMAN_PERSON_GATE') or '').strip()
-    hold_s = float(cfg.get('DOORMAN_PERSON_HOLD_S', 5.0))
+    IGNORED_FACES = set(cfg.get("DOORMAN_IGNORED_FACES") or set())
+    trigger_mode = str(cfg.get("DOORMAN_TRIGGER_MODE", "person")).strip().lower()
+    doorbell_sensor = cfg.get("DOORMAN_DOORBELL_SENSOR") or "binary_sensor.doorbell_pressed"
+    gate_entity = (cfg.get("DOORMAN_PERSON_GATE") or "").strip()
+    hold_s = float(cfg.get("DOORMAN_PERSON_HOLD_S", 5.0))
     gate = None
-    if gate_entity and trigger_mode in ('person', 'hybrid'):
+    if gate_entity and trigger_mode in ("person", "hybrid"):
         gate = DoorZoneGate(gate_entity, hold_s)
         log.info("door-zone gate active: %s held %.0fs", gate_entity, hold_s)
     log.info("personalized greeting enabled: %s", personalized)
     log.info("trigger mode: %s", trigger_mode)
-    log.info("animal behavior: %s", cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice'))
+    log.info("animal behavior: %s", cfg.get("DOORMAN_ANIMAL_BEHAVIOR", "voice"))
     log.info("animal reactions: %s (independent of trigger mode)", ANIMAL_REACTIONS)
-    log.info("ignored faces: %s", sorted(IGNORED_FACES) or '(none)')
-    busy = asyncio.Event()  # not used to block, but to note a running interaction
+    log.info("ignored faces: %s", sorted(IGNORED_FACES) or "(none)")
+    asyncio.Event()  # not used to block, but to note a running interaction
+
     async def handle_event(prompt, trigger_text, meta):
         log.info("TRIGGER: %s", trigger_text)
-        label = meta.get('label', 'person')
-        behavior = str(cfg.get('DOORMAN_ANIMAL_BEHAVIOR', 'voice') or 'voice').lower()
+        label = meta.get("label", "person")
+        behavior = str(cfg.get("DOORMAN_ANIMAL_BEHAVIOR", "voice") or "voice").lower()
         action = _decide_trigger_action(label, behavior)
-        if action == 'animal-off':
+        if action == "animal-off":
             log.info("animal %s detected; DOORMAN_ANIMAL_BEHAVIOR=off, ignoring", label)
             return
         # Camera health gate. The AD410 wedges its RTSP server around interactions
@@ -1044,18 +1081,19 @@ async def amain(args):
                 log.warning("camera health gate: timed out; starting anyway")
         except Exception as e:
             log.warning("camera health gate error: %s; proceeding", e)
-        if action in ('animal-voice', 'animal-notify'):
-            await animal_reaction(label, cfg, behavior,
-                                  event_id=meta.get('frigate_event_id'))
+        if action in ("animal-voice", "animal-notify"):
+            await animal_reaction(label, cfg, behavior, event_id=meta.get("frigate_event_id"))
             log.info("animal reaction done (%s, %s)", label, behavior)
             return
         # launch interaction; serialize so we don't overlap. End early if the visitor
         # goes silent (idle) so Doorman stops listening and can re-trigger later.
         try:
             await asyncio.wait_for(
-                run_interaction(prompt, trigger_text, duration_s=INTERACTION_MAX_S,
-                                idle_timeout_s=IDLE_TIMEOUT_S, meta=meta),
-                timeout=INTERACTION_MAX_S + 15)
+                run_interaction(
+                    prompt, trigger_text, duration_s=INTERACTION_MAX_S, idle_timeout_s=IDLE_TIMEOUT_S, meta=meta
+                ),
+                timeout=INTERACTION_MAX_S + 15,
+            )
         except asyncio.TimeoutError:
             log.warning("interaction overran cap")
         log.info("interaction done")
@@ -1064,19 +1102,23 @@ async def amain(args):
     # Always-on: record doorbell press edges so run_interaction can wait out the
     # AD410's post-press window before opening the backchannel (all trigger modes).
     tasks.append(doorbell_press_tracker(sensor=doorbell_sensor))
-    if trigger_mode in ('doorbell', 'hybrid'):
+    if trigger_mode in ("doorbell", "hybrid"):
         tasks.append(doorbell_event_listener(handle_event, sensor=doorbell_sensor))
     # Person-triggering follows the trigger mode; animal-triggering is the
     # independent DOORMAN_ANIMAL_REACTIONS toggle. The Frigate listener runs
     # whenever EITHER is on, so animals work in any mode without changing it.
-    person_trigger = trigger_mode in ('person', 'hybrid')
+    person_trigger = trigger_mode in ("person", "hybrid")
     animals_trigger = ANIMAL_REACTIONS
     if person_trigger or animals_trigger:
-        tasks.append(frigate_event_listener(handle_event,
-                                            personalized_greeting=personalized,
-                                            gate=gate,
-                                            person_trigger=person_trigger,
-                                            animals_trigger=animals_trigger))
+        tasks.append(
+            frigate_event_listener(
+                handle_event,
+                personalized_greeting=personalized,
+                gate=gate,
+                person_trigger=person_trigger,
+                animals_trigger=animals_trigger,
+            )
+        )
     if gate is not None:
         tasks.append(doorzone_gate_listener(gate, sensor=gate.entity_id))
 
@@ -1084,18 +1126,20 @@ async def amain(args):
     # shares the transcript store + camera health probe. network_mode host means
     # the bind port is reachable on the host LAN. Disabled with
     # DOORMAN_UI_ENABLED=false (service-only runs).
-    if str(cfg.get('DOORMAN_UI_ENABLED', 'true')).strip().lower() in ('true', '1', 'yes', 'on'):
+    if str(cfg.get("DOORMAN_UI_ENABLED", "true")).strip().lower() in ("true", "1", "yes", "on"):
         import ui_api
-        ui_port = int(cfg.get('DOORMAN_UI_PORT', 8090))
+
+        ui_port = int(cfg.get("DOORMAN_UI_PORT", 8090))
 
         async def _run_ui():
             runner = await ui_api.serve(port=ui_port)
             try:
-                await asyncio.Event().wait()   # run until cancelled
+                await asyncio.Event().wait()  # run until cancelled
             finally:
                 await runner.cleanup()
+
         tasks.append(_run_ui())
-        log.info('ui: enabled on port %d', ui_port)
+        log.info("ui: enabled on port %d", ui_port)
 
     # one or both listeners run concurrently, feeding the same handle_event
     await asyncio.gather(*tasks)
@@ -1103,21 +1147,22 @@ async def amain(args):
 
 def main():
     import doorman_config as _dc2
-    _dc2.load_env_file()   # .env -> os.environ, so a re-exec picks up GUI edits
+
+    _dc2.load_env_file()  # .env -> os.environ, so a re-exec picks up GUI edits
     ap = argparse.ArgumentParser()
-    ap.add_argument('--once', type=float, default=0,
-                    help='if >0, run one interaction for N seconds immediately and exit')
-    ap.add_argument('--trigger-text', default='',
-                    help='custom trigger text for --once (else a generic greeting)')
-    ap.add_argument('--recognized', default=None,
-                    help='recognized name for --once (else treated as unknown)')
-    ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument(
+        "--once", type=float, default=0, help="if >0, run one interaction for N seconds immediately and exit"
+    )
+    ap.add_argument("--trigger-text", default="", help="custom trigger text for --once (else a generic greeting)")
+    ap.add_argument("--recognized", default=None, help="recognized name for --once (else treated as unknown)")
+    ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
-                        format='%(asctime)s %(levelname)s %(message)s')
+    logging.basicConfig(
+        level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     code = asyncio.run(amain(a))
     sys.exit(code)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

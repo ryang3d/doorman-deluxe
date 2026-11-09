@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Unit-test ActivityClock idle tracking in doorman.py."""
-import asyncio, sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from doorman import ActivityClock
+
 
 async def main():
     c = ActivityClock()
@@ -21,5 +26,6 @@ async def main():
     assert idle2 > 0.3, f"idle should have grown, got {idle2}"
     print(f"PASS: ActivityClock idle tracking correct (idle grew to {idle2:.2f}s, reset on mark)")
     return 0
+
 
 sys.exit(asyncio.run(main()))

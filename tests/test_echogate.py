@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Unit-test the SpeakingState echo gate logic."""
-import asyncio, sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+import asyncio
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from audio_bridge import SpeakingState
+
 
 async def main():
     s = SpeakingState(tail_s=1.0)
@@ -18,5 +23,6 @@ async def main():
     await asyncio.sleep(1.2)
     assert await s.muted() is False, "unmuted after tail"
     print("SpeakingState echo-gate logic PASS")
+
 
 asyncio.run(main())

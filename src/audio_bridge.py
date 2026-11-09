@@ -25,9 +25,16 @@ Run:
   python src/audio_bridge.py            # run one interaction until Ctrl-C / timeout
   python src/audio_bridge.py --once 30  # run a fixed-duration session then exit
 """
-import argparse, asyncio, json, logging, subprocess, sys, hashlib
+
+import argparse
+import asyncio
+import json
+import logging
+import sys
+import hashlib
 from fractions import Fraction
-import websockets, aiohttp
+import websockets
+import aiohttp
 import av
 
 # aiortc
@@ -37,7 +44,8 @@ from aiortc.mediastreams import AudioStreamTrack
 log = logging.getLogger("bridge")
 
 # ---------------------------------------------------------------- config
-import doorman_config as _dc
+import doorman_config as _dc  # noqa: E402
+
 
 def load_config():
     """Return the merged config dict (env > profile files > defaults)."""
@@ -52,18 +60,19 @@ def voice_speech_config(cfg):
     voice (preserves pre-voice behavior). Shape matches google-genai Live schema:
     speech_config.voice_config.prebuilt_voice_config.voice_name.
     """
-    name = (cfg.get('DOORMAN_VOICE') or '').strip()
+    name = (cfg.get("DOORMAN_VOICE") or "").strip()
     if not name:
         return {}
-    return {'speech_config': {'voice_config': {'prebuilt_voice_config': {'voice_name': name}}}}
+    return {"speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": name}}}}
 
 
 def gemini_connect_cm(system_prompt: str):
     """Return the async-context-manager for a Gemini Live session (caller does `async with`).
     Exposes client+session inside the context."""
     from google import genai
+
     cfg = load_config()
-    key = cfg.get('GEMINI_API_KEY')
+    key = cfg.get("GEMINI_API_KEY")
     if not key:
         raise RuntimeError("no GEMINI_API_KEY")
     client = genai.Client(api_key=key)
@@ -75,7 +84,7 @@ def gemini_connect_cm(system_prompt: str):
     if system_prompt:
         connect_cfg["system_instruction"] = {"parts": [{"text": system_prompt}]}
     cm = client.aio.live.connect(model=model, config=connect_cfg)
-    log.info("Gemini Live connect CM ready (%s) voice=%s", model, cfg.get('DOORMAN_VOICE'))
+    log.info("Gemini Live connect CM ready (%s) voice=%s", model, cfg.get("DOORMAN_VOICE"))
     return cm
 
 
@@ -84,6 +93,7 @@ class SpeakingState:
     """Tracks whether the AI is currently producing speaker audio so the mic feed
     to Gemini can be muted (half-duplex) -> prevents the doorbell mic re-feeding
     the AI's own voice from the speaker (echo -> choppy/fragmented output)."""
+
     def __init__(self, tail_s=1.0):
         self.tail_s = tail_s
         self._active = False
@@ -93,7 +103,7 @@ class SpeakingState:
     async def mark_active(self):
         async with self.lock:
             self._active = True
-            self._last_active = __import__('time').monotonic()
+            self._last_active = __import__("time").monotonic()
 
     async def mark_idle(self):
         async with self.lock:
@@ -106,11 +116,12 @@ class SpeakingState:
         The Gemini path uses mark_active/mark_idle in its receive loop instead."""
         async with self.lock:
             self._active = False
-            self._last_active = __import__('time').monotonic()
+            self._last_active = __import__("time").monotonic()
 
     async def muted(self):
         """True if mic should be muted (AI speaking now or within tail window)."""
         import time
+
         async with self.lock:
             if self._active:
                 return True
@@ -129,22 +140,22 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
             got_content = False
             try:
                 async for response in session.receive():
-                    sc = getattr(response, 'server_content', None)
+                    sc = getattr(response, "server_content", None)
                     if not sc:
                         continue
                     got_content = True
-                    ot = getattr(sc, 'output_transcription', None)
+                    ot = getattr(sc, "output_transcription", None)
                     if ot and ot.text:
                         log.info("[gemini said] %s", ot.text)
-                    mt = getattr(sc, 'model_turn', None)
+                    mt = getattr(sc, "model_turn", None)
                     if mt:
-                        for part in (mt.parts or []):
-                            if getattr(part, 'inline_data', None) and part.inline_data.data:
+                        for part in mt.parts or []:
+                            if getattr(part, "inline_data", None) and part.inline_data.data:
                                 data = part.inline_data.data
                                 audio_out_q.put_nowait(bytes(data))
                                 log.info("[recvloop] queued %d bytes audio", len(data))
                                 await speaking.mark_active()
-                    if getattr(sc, 'turn_complete', False):
+                    if getattr(sc, "turn_complete", False):
                         log.info("turn complete")
                         await speaking.mark_idle()
             except asyncio.CancelledError:
@@ -160,8 +171,6 @@ async def gemini_receive_loop(session, audio_out_q, stop_ev, speaking):
         pass
     finally:
         await speaking.mark_idle()
-
-
 
 
 # ---------------------------------------------------------------- mic capture -> Gemini
@@ -182,9 +191,9 @@ def _parse_challenge(header: str) -> dict:
     return out
 
 
-def _digest_header(method: str, uri: str, ch: dict,
-                   user: str, password: str,
-                   nc="00000001", cnonce="24a8f3b0c1e5") -> str:
+def _digest_header(
+    method: str, uri: str, ch: dict, user: str, password: str, nc="00000001", cnonce="24a8f3b0c1e5"
+) -> str:
     realm = ch.get("realm", "")
     nonce = ch.get("nonce", "")
     qop = ch.get("qop")
@@ -195,8 +204,7 @@ def _digest_header(method: str, uri: str, ch: dict,
         resp = _md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
     else:
         resp = _md5(f"{ha1}:{nonce}:{ha2}")
-    h = (f'Digest username="{user}", realm="{realm}", nonce="{nonce}", '
-         f'uri="{uri}", response="{resp}"')
+    h = f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{resp}"'
     if ch.get("opaque"):
         h += f', opaque="{ch["opaque"]}"'
     if qop:
@@ -246,19 +254,17 @@ async def _open_getaudio(cfg, user=None, password=None):
     -> 200 streaming. A fresh challenge is fetched on every open because the
     firmware rejects nonce reuse. GETAUDIO_PATH is the live visitor-voice stream
     (httptype=singlepart&channel=1)."""
-    import aiohttp
-    host = (cfg.get('DOORMAN_DOORBELL_HOST') or '').strip()
+    host = (cfg.get("DOORMAN_DOORBELL_HOST") or "").strip()
     if not host:
         raise RuntimeError("DOORMAN_DOORBELL_HOST not set")
-    user = user or (cfg.get('DOORMAN_DOORBELL_USER') or 'admin')
-    password = password or (cfg.get('DOORMAN_DOORBELL_PASSWORD') or '')
-    url = 'http://' + host + GETAUDIO_PATH
-    session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=None, sock_read=30))
+    user = user or (cfg.get("DOORMAN_DOORBELL_USER") or "admin")
+    password = password or (cfg.get("DOORMAN_DOORBELL_PASSWORD") or "")
+    url = "http://" + host + GETAUDIO_PATH
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_read=30))
     try:
         # 1. fetch a FRESH challenge
         r = await session.get(url)
-        ctype = r.headers.get('Content-Type', '')
+        ctype = r.headers.get("Content-Type", "")
         if r.status == 200:
             # some firmwares serve without a challenge; stream it directly
             return session, r, ctype
@@ -266,18 +272,18 @@ async def _open_getaudio(cfg, user=None, password=None):
             text = (await r.text())[:120]
             _resp_close(r)
             await session.close()
-            raise RuntimeError('getAudio: expected 401/200, got %s %s' % (r.status, text))
-        challenge = _parse_challenge(r.headers.get('WWW-Authenticate', ''))
+            raise RuntimeError("getAudio: expected 401/200, got %s %s" % (r.status, text))
+        challenge = _parse_challenge(r.headers.get("WWW-Authenticate", ""))
         _resp_close(r)
         # 2. authorized streaming request (fresh connection, same uri)
-        digest = _digest_header('GET', url, challenge, user, password)
-        r2 = await session.get(url, headers={'Authorization': digest})
-        ctype = r2.headers.get('Content-Type', '')
+        digest = _digest_header("GET", url, challenge, user, password)
+        r2 = await session.get(url, headers={"Authorization": digest})
+        ctype = r2.headers.get("Content-Type", "")
         if r2.status != 200:
             text = (await r2.text())[:120]
             _resp_close(r2)
             await session.close()
-            raise RuntimeError('getAudio: auth request %s %s' % (r2.status, text))
+            raise RuntimeError("getAudio: auth request %s %s" % (r2.status, text))
         return session, r2, ctype
     except Exception:
         try:
@@ -287,8 +293,7 @@ async def _open_getaudio(cfg, user=None, password=None):
         raise
 
 
-async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
-                          gain=None, limiter=False):
+async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8, gain=None, limiter=False):
     """Async generator yielding `sample_bytes` of 16k s16le visitor speech from
     the AD410's native HTTP getAudio intercom (zero-RTSP). Opens the stream,
     pipes the raw codec through ffmpeg to 16k s16le, and yields fixed-size
@@ -311,25 +316,39 @@ async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
             # Content-Type is absent/unknown (ADTS sync word, etc.)
             head = await resp.content.read(512)
             if not head:
-                raise RuntimeError('getAudio: empty stream')
+                raise RuntimeError("getAudio: empty stream")
             fargs = _detect_audio_args(ctype, head)
             af_args = []
             if gain:
-                af = 'volume=%s' % gain
+                af = "volume=%s" % gain
                 if limiter:
-                    af += ',alimiter=limit=0.95:attack=5:release=50:level=false'
-                af_args = ['-af', af]
-            args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
-                    *fargs, '-i', 'pipe:0',
-                    '-vn', '-map', '0:a:0',
-                    *af_args,
-                    '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                    '-f', 's16le', 'pipe:1']
+                    af += ",alimiter=limit=0.95:attack=5:release=50:level=false"
+                af_args = ["-af", af]
+            args = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                *fargs,
+                "-i",
+                "pipe:0",
+                "-vn",
+                "-map",
+                "0:a:0",
+                *af_args,
+                "-c:a",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-f",
+                "s16le",
+                "pipe:1",
+            ]
             proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+                *args, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
             stdin = proc.stdin
             stdout = proc.stdout
             stderr = proc.stderr
@@ -344,6 +363,7 @@ async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
                     if not e:
                         return
                     _fbits.append(e)
+
             err_task = asyncio.create_task(_stderr_drain(stderr))
 
             async def _pump_in(pipe, stream):
@@ -363,6 +383,7 @@ async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
                         pipe.close()
                     except Exception:
                         pass
+
             pump_task = asyncio.create_task(_pump_in(stdin, content))
 
             while not stop_ev.is_set():
@@ -405,8 +426,7 @@ async def getaudio_chunks(cfg, stop_ev, sample_bytes=3200, max_reopens=8,
                 except Exception:
                     pass
             if _fbits:
-                log.warning("getaudio ffmpeg stderr: %s",
-                            b"".join(_fbits).decode(errors="replace")[:300])
+                log.warning("getaudio ffmpeg stderr: %s", b"".join(_fbits).decode(errors="replace")[:300])
         if stop_ev.is_set():
             return
         reopens += 1
@@ -425,8 +445,8 @@ async def mic_from_http(session, stop_ev, speaking, sample_bytes=3200):
     preserved; source plumbing + reopen live in getaudio_chunks()."""
     cfg = load_config()
     from google.genai import types
-    log.info("mic: using AD410 HTTP getAudio source %s",
-             (cfg.get('DOORMAN_DOORBELL_HOST') or '').split('@')[-1])
+
+    log.info("mic: using AD410 HTTP getAudio source %s", (cfg.get("DOORMAN_DOORBELL_HOST") or "").split("@")[-1])
     _lvl_n = _lvl_peak = _lvl_muted = 0
     gen = getaudio_chunks(cfg, stop_ev, sample_bytes)
     try:
@@ -434,7 +454,8 @@ async def mic_from_http(session, stop_ev, speaking, sample_bytes=3200):
             muted = await speaking.muted()
             try:
                 import array as _arr
-                _s = _arr.array('h')
+
+                _s = _arr.array("h")
                 _s.frombytes(chunk)
                 _pk = max(abs(x) for x in _s) if len(_s) else 0
             except Exception:
@@ -445,16 +466,20 @@ async def mic_from_http(session, stop_ev, speaking, sample_bytes=3200):
             if muted:
                 _lvl_muted += 1
             if _lvl_n >= 20:
-                log.info("mic http: level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
-                         _lvl_peak, _lvl_n * 0.1, _lvl_muted, _lvl_n)
+                log.info(
+                    "mic http: level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
+                    _lvl_peak,
+                    _lvl_n * 0.1,
+                    _lvl_muted,
+                    _lvl_n,
+                )
                 _lvl_n = 0
                 _lvl_peak = 0
                 _lvl_muted = 0
             if muted:
                 continue
             try:
-                await session.send_realtime_input(
-                    audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
             except Exception as e:
                 log.warning("mic http send_realtime_input err: %s", e)
                 break
@@ -487,23 +512,31 @@ async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None, lim
     -> 'I haven't delivered'). The limiter caps the peak (~0.95) while leaving
     quiet voices and ambient untouched. Verified on the live substream:
     volume=10 alone -> peak 32767 (CLIPS); +alimiter -> peak ~31130 (capped)."""
-    args = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-rtsp_transport', 'tcp',
-            '-i', mic_rtsp,
-            '-vn', '-map', '0:a:0']
+    args = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        mic_rtsp,
+        "-vn",
+        "-map",
+        "0:a:0",
+    ]
     if gain:
-        af = 'volume=%s' % gain
+        af = "volume=%s" % gain
         if limiter:
-            af += ',alimiter=limit=0.95:attack=5:release=50:level=false'
-        args += ['-af', af]
-    args += ['-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-            '-f', 's16le', 'pipe:1']
+            af += ",alimiter=limit=0.95:attack=5:release=50:level=false"
+        args += ["-af", af]
+    args += ["-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"]
     proc = None
     for attempt in range(1, attempts + 1):
         try:
             proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
             probe = await asyncio.wait_for(proc.stdout.read(4), timeout=probe_timeout)
             if probe:
                 return proc
@@ -512,8 +545,11 @@ async def open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3, gain=None, lim
         except Exception:
             pass
         if proc is not None:
-            try: proc.kill(); await proc.wait()
-            except Exception: pass
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         proc = None
         await asyncio.sleep(1)
     return None
@@ -538,11 +574,11 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
     backpressures.
     """
     cfg = load_config()
-    mic_rtsp = rtsp or cfg.get('DOORMAN_MIC_RTSP') or cfg.get('CAM_MIC_RTSP')
+    mic_rtsp = rtsp or cfg.get("DOORMAN_MIC_RTSP") or cfg.get("CAM_MIC_RTSP")
     if not mic_rtsp:
         log.warning("mic: no DOORMAN_MIC_RTSP configured; skipping mic capture")
         return
-    log.info("mic: using go2rtc RTSP relay source %s", mic_rtsp.split('@')[-1])
+    log.info("mic: using go2rtc RTSP relay source %s", mic_rtsp.split("@")[-1])
     from google.genai import types
 
     proc = await open_mic_ffmpeg(mic_rtsp, probe_timeout=15, attempts=3)
@@ -565,9 +601,9 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
 
     _err_task = asyncio.create_task(_stderr_drain())
     acc = bytearray()
-    _lvl_n = 0        # chunks counted in the current level-report window
-    _lvl_peak = 0     # peak |sample| seen in that window
-    _lvl_muted = 0    # chunks gated by the echo gate in that window
+    _lvl_n = 0  # chunks counted in the current level-report window
+    _lvl_peak = 0  # peak |sample| seen in that window
+    _lvl_muted = 0  # chunks gated by the echo gate in that window
     try:
         while not stop_ev.is_set():
             data = await proc.stdout.read(sample_bytes)
@@ -591,7 +627,8 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
                 # Reference levels: quiet ambient peaks ~100-400 int16, speech 10k-25k.
                 try:
                     import array as _arr
-                    _s = _arr.array('h')
+
+                    _s = _arr.array("h")
                     _s.frombytes(chunk)
                     _pk = max(abs(x) for x in _s) if len(_s) else 0
                 except Exception:
@@ -602,16 +639,20 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
                 if muted:
                     _lvl_muted += 1
                 if _lvl_n >= 20:
-                    log.info("mic: relay level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
-                             _lvl_peak, _lvl_n * 0.1, _lvl_muted, _lvl_n)
+                    log.info(
+                        "mic: relay level peak=%d/32767 over %.1fs (gated %d/%d chunks)",
+                        _lvl_peak,
+                        _lvl_n * 0.1,
+                        _lvl_muted,
+                        _lvl_n,
+                    )
                     _lvl_n = 0
                     _lvl_peak = 0
                     _lvl_muted = 0
                 if muted:
                     continue
                 try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                    await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
                 except Exception as e:
                     log.warning("mic send_realtime_input err: %s", e)
                     return
@@ -620,14 +661,12 @@ async def mic_to_gemini(session, stop_ev, speaking, sample_bytes=3200, rtsp=None
     finally:
         _err_task.cancel()
         if _fbits:
-            log.warning("mic: ffmpeg stderr: %s",
-                        b"".join(_fbits).decode(errors="replace")[:300])
+            log.warning("mic: ffmpeg stderr: %s", b"".join(_fbits).decode(errors="replace")[:300])
         try:
             proc.kill()
         except Exception:
             pass
         log.info("mic capture stopped")
-
 
 
 # ---------------------------------------------------------------- AI audio -> WebRTC talkback
@@ -642,7 +681,8 @@ def _frame_to_mono16k(frame):
     Handles both interleaved (to_ndarray shape (1, samples*nch)) and planar
     (shape (nch, samples)) channel layouts."""
     import numpy as np
-    nch = int(getattr(getattr(frame, 'layout', None), 'nb_channels', 1) or 1)
+
+    nch = int(getattr(getattr(frame, "layout", None), "nb_channels", 1) or 1)
     try:
         ns = int(frame.samples)
     except Exception:
@@ -665,7 +705,7 @@ def _frame_to_mono16k(frame):
             per = flat.size // nch
             mono = flat.reshape(nch, per).mean(axis=0).astype(np.int16)
         else:
-            mono = flat[:flat.size // nch * nch].reshape(nch, -1).mean(axis=0).astype(np.int16)
+            mono = flat[: flat.size // nch * nch].reshape(nch, -1).mean(axis=0).astype(np.int16)
     sr = int(frame.sample_rate)
     if sr != 16000 and mono.size:
         x_in = np.arange(mono.size, dtype=np.float64)
@@ -692,12 +732,12 @@ async def mic_from_webtrack(session, recv_holder, stop_ev, speaking, wait_s=20):
     from google.genai import types
 
     deadline = time.monotonic() + wait_s
-    while recv_holder.get('track') is None and not stop_ev.is_set():
+    while recv_holder.get("track") is None and not stop_ev.is_set():
         if time.monotonic() >= deadline:
             log.warning("mic: no received-audio track after %.0fs; mic disabled this interaction", wait_s)
             return
         await asyncio.sleep(0.2)
-    track = recv_holder['track']
+    track = recv_holder["track"]
     log.info("mic: using twoway received-audio track (single-connection mic)")
 
     acc = bytearray()
@@ -722,8 +762,7 @@ async def mic_from_webtrack(session, recv_holder, stop_ev, speaking, wait_s=20):
                 if await speaking.muted():
                     continue
                 try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
+                    await session.send_realtime_input(audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000"))
                 except Exception as e:
                     log.warning("mic send_realtime_input err: %s", e)
                     return
@@ -734,7 +773,7 @@ async def mic_from_webtrack(session, recv_holder, stop_ev, speaking, wait_s=20):
 
 
 # ---------------------------------------------------------------- camera health gate
-async def camera_healthy(camera='front_doorbell', timeout_s=10, min_fps=0.5):
+async def camera_healthy(camera="front_doorbell", timeout_s=10, min_fps=0.5):
     """True if Frigate is ACTUALLY decoding frames from `camera` right now.
 
     Why this replaced the go2rtc-producer check (2026-09-10): the old version returned
@@ -758,8 +797,9 @@ async def camera_healthy(camera='front_doorbell', timeout_s=10, min_fps=0.5):
     """
     try:
         import aiohttp
+
         cfg = load_config()
-        base = cfg['FRIGATE_URL'].rstrip('/')
+        base = cfg["FRIGATE_URL"].rstrip("/")
         url = f"{base}/api/stats"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
             async with http.get(url) as resp:
@@ -767,28 +807,32 @@ async def camera_healthy(camera='front_doorbell', timeout_s=10, min_fps=0.5):
                     log.warning("camera health: /api/stats HTTP %s; assuming OK", resp.status)
                     return True
                 data = await resp.json()
-        cameras = data.get('cameras') or {}
+        cameras = data.get("cameras") or {}
         if camera not in cameras:
             # Unknown to Frigate: we have no signal either way. Fail open, otherwise
             # a mismatched camera name would block every single ring for max_wait_s.
             log.warning("camera health: %s not in Frigate stats; assuming OK", camera)
             return True
         cam = cameras.get(camera) or {}
-        fps_cam = float(cam.get('camera_fps') or 0.0)
-        fps_proc = float(cam.get('process_fps') or 0.0)
+        fps_cam = float(cam.get("camera_fps") or 0.0)
+        fps_proc = float(cam.get("process_fps") or 0.0)
         best = max(fps_cam, fps_proc)
         if best >= min_fps:
             return True
-        log.info("camera health: %s producing no frames (camera_fps=%.2f process_fps=%.2f "
-                 "< %.2f)", camera, fps_cam, fps_proc, min_fps)
+        log.info(
+            "camera health: %s producing no frames (camera_fps=%.2f process_fps=%.2f < %.2f)",
+            camera,
+            fps_cam,
+            fps_proc,
+            min_fps,
+        )
         return False
     except Exception as e:
         log.warning("camera health probe error: %s; assuming OK", e)
         return True
 
 
-async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
-                              consecutive=2, min_fps=0.5):
+async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera="front_doorbell", consecutive=2, min_fps=0.5):
     """Block until Frigate is decoding frames again, requiring `consecutive` healthy
     samples in a row so one transient reading does not open the gate.
 
@@ -797,6 +841,7 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
     False if still unhealthy after max_wait_s (the caller proceeds anyway rather than
     dropping the ring)."""
     import time
+
     healthy_run = 0
     warned = False
     deadline = time.monotonic() + max_wait_s
@@ -811,17 +856,16 @@ async def wait_camera_healthy(max_wait_s=90, poll_s=5, camera='front_doorbell',
             healthy_run = 0
             if not warned:
                 warned = True
-                log.warning("camera health: %s not producing frames; waiting up to %.0fs",
-                            camera, max_wait_s)
+                log.warning("camera health: %s not producing frames; waiting up to %.0fs", camera, max_wait_s)
         if time.monotonic() >= deadline:
-            log.warning("camera health: %s still not producing frames after %.0fs; "
-                        "proceeding anyway", camera, max_wait_s)
+            log.warning(
+                "camera health: %s still not producing frames after %.0fs; proceeding anyway", camera, max_wait_s
+            )
             return False
         await asyncio.sleep(poll_s)
 
 
-async def main_upstream_receiving(camera='front_doorbell', window_s=None,
-                                  min_bytes=None, timeout_s=6.0):
+async def main_upstream_receiving(camera="front_doorbell", window_s=None, min_bytes=None, timeout_s=6.0):
     """True if go2rtc is actually RECEIVING upstream bytes from the camera on
     `camera`'s MAIN stream, measured over `window_s`.
 
@@ -849,17 +893,16 @@ async def main_upstream_receiving(camera='front_doorbell', window_s=None,
     camera_healthy's behavior so a go2rtc API blip never blocks the ring).
     """
     import asyncio as _aio
-    import json, time
-    import aiohttp
+
     cfg = load_config()
     if window_s is None:
         try:
-            window_s = float(cfg.get('DOORMAN_UPSTREAM_CHECK_WINDOW_S', 3.0))
+            window_s = float(cfg.get("DOORMAN_UPSTREAM_CHECK_WINDOW_S", 3.0))
         except (TypeError, ValueError):
             window_s = 3.0
     if min_bytes is None:
         try:
-            min_bytes = int(float(cfg.get('DOORMAN_UPSTREAM_CHECK_MIN_BYTES', 50_000)))
+            min_bytes = int(float(cfg.get("DOORMAN_UPSTREAM_CHECK_MIN_BYTES", 50_000)))
         except (TypeError, ValueError):
             min_bytes = 50_000
     window_s = max(1.0, window_s)
@@ -870,28 +913,27 @@ async def main_upstream_receiving(camera='front_doorbell', window_s=None,
     # samples 3s apart can read the SAME bytes, delta 0 -> false "not receiving"
     # -> the wait loops and burns a full extra cycle (the 7-19s settle we saw).
     # go2rtc direct is auth-less and reachable from the doorman container.
-    g2r = (cfg.get('GO2RTC_URL') or '').rstrip('/')
+    g2r = (cfg.get("GO2RTC_URL") or "").rstrip("/")
     if g2r:
         url = f"{g2r}/api/streams"
     else:
-        base = (cfg.get('FRIGATE_URL') or 'http://<frigate-host>:5001').rstrip('/')
+        base = (cfg.get("FRIGATE_URL") or "http://<frigate-host>:5001").rstrip("/")
         url = f"{base}/api/go2rtc/streams"
 
     async def _fetch():
-        async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as http:
             async with http.get(url) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json()
         cam = (data or {}).get(camera) or {}
-        producers = cam.get('producers') or []
+        producers = cam.get("producers") or []
         for p in producers:
             # the main producer has a camera remote_addr (upstream), not go2rtc
-            if (p.get('remote_addr') or '').split(':')[0].startswith('192'):
-                return p.get('bytes_recv')
+            if (p.get("remote_addr") or "").split(":")[0].startswith("192"):
+                return p.get("bytes_recv")
         if producers:
-            return producers[0].get('bytes_recv')
+            return producers[0].get("bytes_recv")
         return None
 
     try:
@@ -913,11 +955,11 @@ async def main_upstream_receiving(camera='front_doorbell', window_s=None,
     delta = (b1 or 0) - (b0 or 0)
     ok = delta >= min_bytes
     if ok:
-        log.debug("main upstream: %d bytes over %.0fs (>= %d); receiving",
-                  delta, window_s, min_bytes)
+        log.debug("main upstream: %d bytes over %.0fs (>= %d); receiving", delta, window_s, min_bytes)
     else:
-        log.warning("main upstream: only %d bytes over %.0fs (< %d); camera not "
-                    "delivering upstream", delta, window_s, min_bytes)
+        log.warning(
+            "main upstream: only %d bytes over %.0fs (< %d); camera not delivering upstream", delta, window_s, min_bytes
+        )
     return ok
 
 
@@ -926,20 +968,24 @@ async def main_upstream_receiving(camera='front_doorbell', window_s=None,
 # __main__ while voice_local does `import doorman`, giving two module instances
 # with two dicts. The tracker (doorman.py) writes via record_doorbell_press()/
 # record_doorbell_release(); ring_settle_wait() reads this same global.
-_PRESS_EDGE: "dict[str, float | None]" = {'ts_on': None, 'ts_off': None}
+_PRESS_EDGE: "dict[str, float | None]" = {"ts_on": None, "ts_off": None}
+
 
 def record_doorbell_press(ts: float | None = None):
     import time as _time
-    _PRESS_EDGE['ts_on'] = ts if ts is not None else _time.monotonic()
+
+    _PRESS_EDGE["ts_on"] = ts if ts is not None else _time.monotonic()
     # a new press invalidates a release recorded before it
-    off = _PRESS_EDGE['ts_off']
-    on = _PRESS_EDGE['ts_on']
+    off = _PRESS_EDGE["ts_off"]
+    on = _PRESS_EDGE["ts_on"]
     if off is not None and on is not None and off < on:
-        _PRESS_EDGE['ts_off'] = None
+        _PRESS_EDGE["ts_off"] = None
+
 
 def record_doorbell_release(ts: float | None = None):
     import time as _time
-    _PRESS_EDGE['ts_off'] = ts if ts is not None else _time.monotonic()
+
+    _PRESS_EDGE["ts_off"] = ts if ts is not None else _time.monotonic()
 
 
 async def ring_settle_wait(cfg, settle_s=None, log=None):
@@ -974,38 +1020,38 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
     press pays that one small delay, then opens. Reads _PRESS_EDGE directly, so
     the dual-import of doorman.py can't split state."""
     import time
+
     if log is None:
-        log = logging.getLogger('audio_bridge')
-    press_ts = _PRESS_EDGE['ts_on']
+        log = logging.getLogger("audio_bridge")
+    press_ts = _PRESS_EDGE["ts_on"]
     if press_ts is None:
-        grace = float(cfg.get('DOORMAN_RING_SETTLE_PRESS_GRACE_S', 5.0))
+        grace = float(cfg.get("DOORMAN_RING_SETTLE_PRESS_GRACE_S", 5.0))
         deadline = time.monotonic() + grace
-        while _PRESS_EDGE['ts_on'] is None and time.monotonic() < deadline:
+        while _PRESS_EDGE["ts_on"] is None and time.monotonic() < deadline:
             await asyncio.sleep(0.25)
-        press_ts = _PRESS_EDGE['ts_on']
+        press_ts = _PRESS_EDGE["ts_on"]
         if press_ts is None:
             log.debug("ring-settle: no press edge within %.0fs grace; opening backchannel", grace)
             return
     if settle_s is None:
-        settle_s = float(cfg.get('DOORMAN_RING_SETTLE_S', 12.0))
-    max_s = float(cfg.get('DOORMAN_RING_SETTLE_MAX_S', 45.0))
+        settle_s = float(cfg.get("DOORMAN_RING_SETTLE_S", 12.0))
+    max_s = float(cfg.get("DOORMAN_RING_SETTLE_MAX_S", 45.0))
 
     # Wait for the release edge (button let-go), capped at max_s from the press.
-    off_ts = _PRESS_EDGE['ts_off']
+    off_ts = _PRESS_EDGE["ts_off"]
     if off_ts is None or off_ts < press_ts:
         deadline = press_ts + max_s
         while time.monotonic() < deadline:
-            cand = _PRESS_EDGE['ts_off']
+            cand = _PRESS_EDGE["ts_off"]
             if cand is not None and cand >= press_ts:
                 off_ts = cand
                 break
             await asyncio.sleep(0.5)
-        cand = _PRESS_EDGE['ts_off']
+        cand = _PRESS_EDGE["ts_off"]
         if cand is not None and cand >= press_ts:
             off_ts = cand
     if off_ts is None or off_ts < press_ts:
-        log.warning("ring-settle: no release edge within %.0fs of press; gating on "
-                    "camera fps only", max_s)
+        log.warning("ring-settle: no release edge within %.0fs of press; gating on camera fps only", max_s)
         off_ts = press_ts
 
     # The real gate (2026-09-26): the AD410 degrades its MAIN RTSP stream
@@ -1032,21 +1078,25 @@ async def ring_settle_wait(cfg, settle_s=None, log=None):
     # hold recovers later and opens the moment upstream bytes resume.
     floor = off_ts + settle_s
     deadline = off_ts + max_s
-    log.info("ring-settle: button released; holding %.0fs floor then waiting for "
-             "the main upstream to resume delivering (cap %.0fs) before opening "
-             "the backchannel", settle_s, max_s)
+    log.info(
+        "ring-settle: button released; holding %.0fs floor then waiting for "
+        "the main upstream to resume delivering (cap %.0fs) before opening "
+        "the backchannel",
+        settle_s,
+        max_s,
+    )
     await asyncio.sleep(max(0.0, floor - time.monotonic()))
-    healthy = await main_upstream_receiving('front_doorbell')
+    healthy = await main_upstream_receiving("front_doorbell")
     while not healthy and time.monotonic() < deadline:
-        log.info("ring-settle: main upstream still not delivering; re-checking in "
-                 "a moment")
+        log.info("ring-settle: main upstream still not delivering; re-checking in a moment")
         await asyncio.sleep(1.0)
-        healthy = await main_upstream_receiving('front_doorbell')
+        healthy = await main_upstream_receiving("front_doorbell")
     if healthy:
         log.info("ring-settle: main upstream delivering again; opening backchannel")
     else:
-        log.warning("ring-settle: %.0fs cap reached, main upstream still not "
-                    "delivering; opening backchannel anyway", max_s)
+        log.warning(
+            "ring-settle: %.0fs cap reached, main upstream still not delivering; opening backchannel anyway", max_s
+        )
 
 
 class GeminiAudioTrack(AudioStreamTrack):
@@ -1055,22 +1105,23 @@ class GeminiAudioTrack(AudioStreamTrack):
     and always emits one 20ms 48k frame (zero-padded if idle). This gives steady
     real-time pacing to the WebRTC sender (fixes choppy delivery).
     """
+
     RATE_IN = 24000
     RATE_OUT = 48000
-    FRAME_SAMPLES_OUT = 960          # 20ms @48k
+    FRAME_SAMPLES_OUT = 960  # 20ms @48k
 
     def __init__(self, audio_q, sample_rate_out=48000):
         super().__init__()
         self.audio_q = audio_q
         self.sample_rate_out = sample_rate_out
-        self._in_buf = bytearray()   # pending 24k pcm16 not yet upsampled
+        self._in_buf = bytearray()  # pending 24k pcm16 not yet upsampled
         self._out_buf = bytearray()  # upsampled 48k pcm16 awaiting emission
         self._out_pts = 0
         self._ended = False
-        self._last_sample = 0        # for zero-order hold on upsampling
-        self.recv_count = 0          # diagnostic
-        self.nonzero_frames = 0      # diagnostic
-        self._frame_start = None     # real-time pacing clock
+        self._last_sample = 0  # for zero-order hold on upsampling
+        self.recv_count = 0  # diagnostic
+        self.nonzero_frames = 0  # diagnostic
+        self._frame_start = None  # real-time pacing clock
         # windowed speaker-output diagnostics (added 2026-09-10): we need to know
         # EXACTLY when real (non-silent) audio is being driven to the doorbell
         # speaker, because that is the surviving wedge suspect. The old code only
@@ -1079,7 +1130,7 @@ class GeminiAudioTrack(AudioStreamTrack):
         self._win_frames = 0
         self._win_nonzero = 0
         self._win_last = 0.0
-        self.speaker_seconds = 0.0   # cumulative seconds with real audio out
+        self.speaker_seconds = 0.0  # cumulative seconds with real audio out
 
     async def _pace(self):
         """aiortc does NOT pace audio - it calls recv() in a tight loop. So we must
@@ -1087,6 +1138,7 @@ class GeminiAudioTrack(AudioStreamTrack):
         fast-forward through silence and the real speech lands at an RTP timestamp
         far past the session (silent doorbell). Returns after the pacing sleep."""
         import time
+
         frame_dur = self.FRAME_SAMPLES_OUT / self.sample_rate_out  # 0.02s
         now = time.monotonic()
         if self._frame_start is None:
@@ -1100,6 +1152,7 @@ class GeminiAudioTrack(AudioStreamTrack):
     def _drain_queue(self):
         """Move whatever 24k audio is queued into _out_buf (non-blocking)."""
         import numpy as np
+
         while not self.audio_q.empty():
             try:
                 chunk = self.audio_q.get_nowait()
@@ -1129,6 +1182,7 @@ class GeminiAudioTrack(AudioStreamTrack):
         if self._ended:
             raise asyncio.CancelledError
         import numpy as np
+
         # Pace to real time FIRST so we never run ahead of the wall clock (aiortc
         # would otherwise consume silence frames instantly and push speech's RTP
         # timestamp far into the future -> speech never heard in-session).
@@ -1140,17 +1194,22 @@ class GeminiAudioTrack(AudioStreamTrack):
         del self._out_buf[:target_bytes]
         if len(out_bytes) < target_bytes:
             # pad with zeros (idle)
-            out_bytes += b'\x00' * (target_bytes - len(out_bytes))
+            out_bytes += b"\x00" * (target_bytes - len(out_bytes))
         self.recv_count += 1
         nonzero = any(out_bytes)
         if nonzero:
             self.nonzero_frames += 1
             if self.recv_count <= 5 or self.nonzero_frames <= 5:
-                log.info("[track] recv #%d has NONZERO audio (%d bytes nonzero)", self.recv_count, sum(1 for b in out_bytes if b))
+                log.info(
+                    "[track] recv #%d has NONZERO audio (%d bytes nonzero)",
+                    self.recv_count,
+                    sum(1 for b in out_bytes if b),
+                )
         # Windowed speaker-output summary every ~2s. This is the "is the AI actually
         # driving the speaker right now" signal; correlate it against the mic level
         # lines to test whether real audio-out wedges the camera.
         import time as _t
+
         now = _t.monotonic()
         self._win_frames += 1
         if nonzero:
@@ -1160,13 +1219,18 @@ class GeminiAudioTrack(AudioStreamTrack):
         elif now - self._win_last >= 2.0:
             win = now - self._win_last
             self.speaker_seconds += self._win_nonzero * 0.02
-            log.info("[speaker] audio-out %d/%d frames nonzero over %.1fs (total speech %.1fs)",
-                     self._win_nonzero, self._win_frames, win, self.speaker_seconds)
+            log.info(
+                "[speaker] audio-out %d/%d frames nonzero over %.1fs (total speech %.1fs)",
+                self._win_nonzero,
+                self._win_frames,
+                win,
+                self.speaker_seconds,
+            )
             self._win_last = now
             self._win_frames = 0
             self._win_nonzero = 0
         arr = np.frombuffer(out_bytes, dtype=np.int16).reshape(1, -1)
-        fr = av.AudioFrame.from_ndarray(arr, format='s16', layout='mono')
+        fr = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
         fr.sample_rate = self.sample_rate_out
         fr.pts = self._out_pts
         fr.time_base = Fraction(1, self.sample_rate_out)
@@ -1174,7 +1238,7 @@ class GeminiAudioTrack(AudioStreamTrack):
         return fr
 
 
-async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
+async def talkback_connect(cfg, audio_q, stream="front_doorbell_twoway"):
     """Open WebRTC consumer connection to go2rtc carrying the Gemini audio track (sendonly).
     Returns (pc, ws, mic, keep_task, recv_holder). The WebSocket MUST stay open for the
     session's lifetime (it is go2rtc's signaling + connection keepalive); closing it tears down
@@ -1186,8 +1250,8 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
     If the answer has no sendonly audio, recv_holder['track'] stays None and the caller can
     disable the mic.
     """
-    base = cfg['FRIGATE_URL'].rstrip('/')
-    wsbase = base.replace('http://','ws://').replace('https://','wss://')
+    base = cfg["FRIGATE_URL"].rstrip("/")
+    wsbase = base.replace("http://", "ws://").replace("https://", "wss://")
     # Frigate >= 0.18.0 serves go2rtc's WebRTC WS at /live/webrtc/api/ws via its
     # bundled nginx (go2rtc is now a separate upstream, 127.0.0.1:1984). The older
     # /api/go2rtc/api/ws path falls through to the Frigate app and 403s. No cookie /
@@ -1202,14 +1266,14 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
     # NO video transceiver: the backchannel only needs audio both ways; video is
     # watched via Frigate's normal streams. The received-audio track is what
     # mic_from_webtrack consumes as the visitor mic.
-    pc.addTransceiver('audio', direction='recvonly')
-    recv_holder = {'track': None}
+    pc.addTransceiver("audio", direction="recvonly")
+    recv_holder = {"track": None}
 
-    @pc.on('track')
+    @pc.on("track")
     def on_track(track):
-        if track.kind == 'audio' and recv_holder['track'] is None:
+        if track.kind == "audio" and recv_holder["track"] is None:
             log.info("talkback: received-audio track available (camera mic path)")
-            recv_holder['track'] = track
+            recv_holder["track"] = track
 
     mic = GeminiAudioTrack(audio_q)
     pc.addTrack(mic)
@@ -1220,14 +1284,16 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
         offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
         for _ in range(80):
-            if pc.iceGatheringState == 'complete':
+            if pc.iceGatheringState == "complete":
                 break
             await asyncio.sleep(0.1)
-        await ws.send(json.dumps({'type':'webrtc/offer','value':pc.localDescription.sdp}))
+        await ws.send(json.dumps({"type": "webrtc/offer", "value": pc.localDescription.sdp}))
         log.info("offer sent")
 
         # Keep consuming signaling so go2rtc's WS stays alive + apply late candidates
-        answered = asyncio.Event(); werr=None
+        answered = asyncio.Event()
+        werr = None
+
         async def consume():
             nonlocal werr
             try:
@@ -1241,57 +1307,83 @@ async def talkback_connect(cfg, audio_q, stream='front_doorbell_twoway'):
                         except Exception:
                             pass
                         continue
-                    m=json.loads(raw); t=m.get('type')
-                    if t=='webrtc/answer':
-                        await pc.setRemoteDescription(RTCSessionDescription(type='answer',sdp=m['value']))
-                        log.info("got answer"); answered.set()
-                    elif t=='webrtc/candidate':
-                        cs=m.get('value')
-                        if cs: await add_candidate(pc, cs)
-                    elif t=='error':
-                        werr=m.get('value'); log.error("go2rtc: %s", werr); answered.set()
+                    m = json.loads(raw)
+                    t = m.get("type")
+                    if t == "webrtc/answer":
+                        await pc.setRemoteDescription(RTCSessionDescription(type="answer", sdp=m["value"]))
+                        log.info("got answer")
+                        answered.set()
+                    elif t == "webrtc/candidate":
+                        cs = m.get("value")
+                        if cs:
+                            await add_candidate(pc, cs)
+                    elif t == "error":
+                        werr = m.get("value")
+                        log.error("go2rtc: %s", werr)
+                        answered.set()
             except Exception as e:
                 log.warning("signaling consumer ended: %s", e)
+
         keep_task = asyncio.create_task(consume())
         try:
-            await asyncio.wait_for(answered.wait(),timeout=30)
+            await asyncio.wait_for(answered.wait(), timeout=30)
         except asyncio.TimeoutError:
             log.warning("no answer")
         if werr:
-            keep_task.cancel(); await ws.close(); await pc.close()
+            keep_task.cancel()
+            await ws.close()
+            await pc.close()
             raise RuntimeError(f"go2rtc: {werr}")
         for _ in range(40):
-            if pc.iceConnectionState in ('connected','completed'): break
-            if pc.iceConnectionState in ('failed','disconnected','closed'):
-                log.warning("ICE %s", pc.iceConnectionState); break
+            if pc.iceConnectionState in ("connected", "completed"):
+                break
+            if pc.iceConnectionState in ("failed", "disconnected", "closed"):
+                log.warning("ICE %s", pc.iceConnectionState)
+                break
             await asyncio.sleep(0.5)
         log.info("ICE state: %s", pc.iceConnectionState)
-        if pc.iceConnectionState not in ('connected','completed'):
-            keep_task.cancel(); await ws.close(); await pc.close()
+        if pc.iceConnectionState not in ("connected", "completed"):
+            keep_task.cancel()
+            await ws.close()
+            await pc.close()
             raise RuntimeError("ICE never connected")
-        log.info("talkback connected (AI audio -> doorbell speaker; mic via received-audio track)"
-                 if recv_holder.get('track') is not None else
-                 "talkback connected (AI audio -> doorbell speaker; NOTE: no received-audio track -> mic may be disabled)")
+        log.info(
+            "talkback connected (AI audio -> doorbell speaker; mic via received-audio track)"
+            if recv_holder.get("track") is not None
+            else "talkback connected (AI audio -> doorbell speaker; NOTE: no received-audio track -> mic may be disabled)"
+        )
         return pc, ws, mic, keep_task, recv_holder
     except Exception:
         # cleanup on any failure before returning
-        try: await ws.close()
-        except Exception: pass
-        try: await pc.close()
-        except Exception: pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        try:
+            await pc.close()
+        except Exception:
+            pass
         raise
 
 
 async def add_candidate(pc, cand_str):
     try:
-        cand_str=cand_str.strip()
-        if cand_str.startswith('a='): cand_str=cand_str[2:]
-        parts=cand_str.split(' ')
-        if len(parts)>=6 and parts[0].startswith('candidate:'):
-            c=RTCIceCandidate(foundation=parts[0].split(':')[1],component=int(parts[1]),
-                              protocol=parts[2],priority=int(parts[3]),ip=parts[4],
-                              port=int(parts[5]),type=parts[7] if len(parts)>7 else 'host')
-            c.sdpMid='0'; c.sdpMLineIndex=0
+        cand_str = cand_str.strip()
+        if cand_str.startswith("a="):
+            cand_str = cand_str[2:]
+        parts = cand_str.split(" ")
+        if len(parts) >= 6 and parts[0].startswith("candidate:"):
+            c = RTCIceCandidate(
+                foundation=parts[0].split(":")[1],
+                component=int(parts[1]),
+                protocol=parts[2],
+                priority=int(parts[3]),
+                ip=parts[4],
+                port=int(parts[5]),
+                type=parts[7] if len(parts) > 7 else "host",
+            )
+            c.sdpMid = "0"
+            c.sdpMLineIndex = 0
             await pc.addIceCandidate(c)
     except Exception as e:
         log.debug("cand err: %s", e)
@@ -1307,9 +1399,10 @@ DEFAULT_PROMPT = (
     "someone will be notified. You cannot unlock the door."
 )
 
+
 async def run_once(duration_s, system_prompt):
     cfg = load_config()
-    audio_q = asyncio.Queue()   # gemini pcm16 24k -> talkback
+    audio_q = asyncio.Queue()  # gemini pcm16 24k -> talkback
     stop_ev = asyncio.Event()
 
     cm = gemini_connect_cm(system_prompt)
@@ -1327,7 +1420,7 @@ async def run_once(duration_s, system_prompt):
         #    used only if the camera offered no received-audio track this time.
         speaking = SpeakingState()
         recv_task = asyncio.create_task(gemini_receive_loop(session, audio_q, stop_ev, speaking))
-        if recv_holder.get('track') is not None:
+        if recv_holder.get("track") is not None:
             mic_task = asyncio.create_task(mic_from_webtrack(session, recv_holder, stop_ev, speaking))
         else:
             log.warning("mic: no received-audio track; falling back to RTSP sub relay")
@@ -1337,9 +1430,12 @@ async def run_once(duration_s, system_prompt):
         # Prime: tell Gemini to greet the visitor once connected.
         try:
             await asyncio.sleep(1.0)
-            await session.send_realtime_input(text=(
-                "You are now live at the door. Give a short friendly greeting inviting the "
-                "visitor to state their business, then wait for them to speak."))
+            await session.send_realtime_input(
+                text=(
+                    "You are now live at the door. Give a short friendly greeting inviting the "
+                    "visitor to state their business, then wait for them to speak."
+                )
+            )
         except Exception as e:
             log.warning("prime err: %s", e)
 
@@ -1348,7 +1444,9 @@ async def run_once(duration_s, system_prompt):
         except asyncio.TimeoutError:
             log.info("duration elapsed")
         log.info("shutting down bridge")
-        recv_task.cancel(); mic_task.cancel(); keep_task.cancel()
+        recv_task.cancel()
+        mic_task.cancel()
+        keep_task.cancel()
         try:
             await pc.close()
         except Exception:
@@ -1360,17 +1458,18 @@ async def run_once(duration_s, system_prompt):
     return 0
 
 
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--once', type=float, default=45, help='seconds to run before exit')
-    ap.add_argument('--prompt', default=DEFAULT_PROMPT)
-    ap.add_argument('-v','--verbose', action='store_true')
+    ap.add_argument("--once", type=float, default=45, help="seconds to run before exit")
+    ap.add_argument("--prompt", default=DEFAULT_PROMPT)
+    ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
-    logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
-                        format='%(asctime)s %(levelname)s %(message)s')
+    logging.basicConfig(
+        level=logging.DEBUG if a.verbose else logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+    )
     code = asyncio.run(run_once(a.once, a.prompt))
     sys.exit(code)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

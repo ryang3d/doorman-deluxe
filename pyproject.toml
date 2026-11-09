@@ -1,0 +1,16 @@
+# Tool configuration for Doorman Deluxe.
+# This is a service, not a library: run it from a source checkout or the
+# official Docker image (ghcr.io/ryang3d/doorman-deluxe). `pip install .` is
+# not supported yet.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+# Conservative default rule set (pyflakes F + selected pycodestyle E/W).
+# Kept deliberately small so `ruff check --fix` is safe to run wholesale.
+select = ["E4", "E7", "E9", "F", "W"]

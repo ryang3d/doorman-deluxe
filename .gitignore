@@ -17,3 +17,7 @@ tmp/
 
 # hermes agent scratch
 .hermes/
+
+.pytest_cache/
+.ruff_cache/
+.artifacts/

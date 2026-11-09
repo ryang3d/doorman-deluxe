@@ -14,7 +14,7 @@ a fixed set of placeholders via literal ``str.replace``:
   animal  -> {animal_label}, {greeting}
   trigger -> {facts}
 """
-import json
+
 import random
 import prompts_store
 
@@ -25,7 +25,7 @@ import prompts_store
 # / build_doorman_prompt); these are mirrors of the store's defaults, not the
 # values the builders read at runtime.
 ANIMAL_LINES = {
-    'cat': [
+    "cat": [
         "Oh, a kitty at the door! Here kitty kitty, you're not supposed to be in here.",
         "Scram, kitty cat! Nice to see you but the door's not open for the feline.",
         "Well well, a cat on the front porch. I hope you brought a little greeting for me.",
@@ -33,7 +33,7 @@ ANIMAL_LINES = {
         "I see a cat at the door! Do you come here often?",
         "A cat at the front door! I can't open for a feline but I can say hello.",
     ],
-    'dog': [
+    "dog": [
         "Well hello there, you big friendly doggy! Who's a good boy?",
         "A dog at the front door! You're such a good boy, come to say hi.",
         "Hey, a dog has stopped by! I hope you brought a nice greeting for me.",
@@ -45,15 +45,14 @@ ANIMAL_LINES = {
 
 # Reference fallback for any animal label not in ANIMAL_LINES (store-backed live
 # value: prompts_store's 'animal_generic_line' default).
-_ANIMAL_LINE_GENERIC = ("Oh, I see a little visitor at the door! "
-                        "I can say hi but I can't open for you.")
+_ANIMAL_LINE_GENERIC = "Oh, I see a little visitor at the door! I can say hi but I can't open for you."
 
 
 def _substitute(template, **vals):
     """Replace {placeholder} tokens in `template` with `vals`, literal str.replace."""
     out = template
     for k, v in vals.items():
-        out = out.replace('{' + k + '}', str(v))
+        out = out.replace("{" + k + "}", str(v))
     return out
 
 
@@ -61,7 +60,8 @@ def _identity_block(recognized_name):
     """The identity sentence: warm for a known person, guarded for a stranger."""
     if recognized_name:
         return (
-            "\nThe visitor is recognized as " + str(recognized_name)
+            "\nThe visitor is recognized as "
+            + str(recognized_name)
             + ", a household member or known friend. You may greet them by "
             "name and be warm, but still do not volunteer details about "
             "whether anyone else is home."
@@ -74,16 +74,15 @@ def _identity_block(recognized_name):
 
 def animal_greeting_line(label):
     """Pick ONE natural one-liner from the store-backed pool for `label`."""
-    key = {'cat': 'animal_cat_lines', 'dog': 'animal_dog_lines'}.get(label)
+    key = {"cat": "animal_cat_lines", "dog": "animal_dog_lines"}.get(label)
     if key:
         lines = prompts_store.lines_of(key)
         if lines:
             return random.choice(lines)
-    return prompts_store.get('animal_generic_line')
+    return prompts_store.get("animal_generic_line")
 
 
-def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
-                         household_hint=("the residents"), animal_label=None):
+def build_doorman_prompt(*, recognized_name=None, unknown_ok=True, household_hint=("the residents"), animal_label=None):
     """Return the Gemini Live system prompt for a doorbell interaction.
 
     recognized_name: Frigate sub_label if a known face was matched (e.g. "Ryan"), else None.
@@ -93,20 +92,19 @@ def build_doorman_prompt(*, recognized_name=None, unknown_ok=True,
     """
     if animal_label:
         line = animal_greeting_line(animal_label)
-        return _substitute(prompts_store.get('animal'),
-                           animal_label=animal_label, greeting=line)
+        return _substitute(prompts_store.get("animal"), animal_label=animal_label, greeting=line)
     identity = _identity_block(recognized_name)
-    return _substitute(prompts_store.get('system'),
-                       household_hint=household_hint, identity=identity)
+    return _substitute(prompts_store.get("system"), household_hint=household_hint, identity=identity)
 
 
-def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False,
-                             label="person", animal=False):
+def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False, label="person", animal=False):
     """Short text to prime the session with what triggered the interaction."""
     if animal:
-        return ("A " + str(label) + " was detected at the front door. Say a single, "
-                "short, playful one-liner that you can see it, then wrap up. Do "
-                "not hold a full conversation - it is a " + str(label) + ", not a person.")
+        return (
+            "A " + str(label) + " was detected at the front door. Say a single, "
+            "short, playful one-liner that you can see it, then wrap up. Do "
+            "not hold a full conversation - it is a " + str(label) + ", not a person."
+        )
     facts = []
     if doorbell_pressed:
         facts.append("The visitor rang the doorbell.")
@@ -114,7 +112,7 @@ def interaction_trigger_text(*, recognized_name=None, doorbell_pressed=False,
         facts.append("This visitor is recognized as " + str(recognized_name) + ".")
     elif label:
         facts.append("A " + str(label) + " was detected at the door.")
-    return _substitute(prompts_store.get('trigger'), facts=" ".join(facts)).strip()
+    return _substitute(prompts_store.get("trigger"), facts=" ".join(facts)).strip()
 
 
 def preview_system(template, recognized_name=None):

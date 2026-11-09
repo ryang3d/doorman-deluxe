@@ -14,28 +14,28 @@ cookie). The events endpoint takes ?camera=<name>&limit=<n>; results are
 newest-first. There is no timestamp filter (?after/ ?before expect event
 ids), so the fallback filters in-process by start_time.
 """
-import json
+
 from datetime import datetime
 
 import aiohttp
 
 import doorman_config as _dc
 
-_CLIPS = {'limit': 200}   # bounded fetch; ~13 days of front-door events
+_CLIPS = {"limit": 200}  # bounded fetch; ~13 days of front-door events
 
 
 def _base():
     c = _dc.load()
-    return (c.get('FRIGATE_URL') or '').rstrip('/')
+    return (c.get("FRIGATE_URL") or "").rstrip("/")
 
 
 def _camera():
-    return _dc.load().get('FRONT_CAMERA') or 'front_doorbell'
+    return _dc.load().get("FRONT_CAMERA") or "front_doorbell"
 
 
 def _fallback_window_s():
     try:
-        return int(float(_dc.load().get('DOORMAN_CLIP_FALLBACK_WINDOW_S') or 300))
+        return int(float(_dc.load().get("DOORMAN_CLIP_FALLBACK_WINDOW_S") or 300))
     except (TypeError, ValueError):
         return 300
 
@@ -60,15 +60,15 @@ async def get_event_has_clip(event_id):
         return False
     try:
         async with aiohttp.ClientSession() as s:
-            data = await _fetch_json(s, _base() + '/api/events/' + event_id)
-        return bool(data and data.get('has_clip'))
+            data = await _fetch_json(s, _base() + "/api/events/" + event_id)
+        return bool(data and data.get("has_clip"))
     except Exception:
         return False
 
 
 def _score(event, started):
     """Higher is better: overlap with [started, started+60s]; else closeness."""
-    st, en = event.get('start_time'), event.get('end_time')
+    st, en = event.get("start_time"), event.get("end_time")
     if st is None:
         return -1
     s_ts = started.timestamp()
@@ -82,32 +82,29 @@ def _score(event, started):
 async def resolve_event_id(session_id):
     """Return {'event_id', 'clip_url', 'match'} or None. Never raises."""
     import transcripts as _tr
+
     s = _tr.load_session(session_id)
     if not s:
         return None
-    started = _parse_dt(s.get('started_at'))
+    started = _parse_dt(s.get("started_at"))
     if not started:
         return None
-    exact = s.get('frigate_event_id')
+    exact = s.get("frigate_event_id")
     if exact and await get_event_has_clip(exact):
-        return {'event_id': exact,
-                'clip_url': _base() + '/api/events/' + exact + '/clip.mp4',
-                'match': 'exact'}
+        return {"event_id": exact, "clip_url": _base() + "/api/events/" + exact + "/clip.mp4", "match": "exact"}
     # Fallback: recent events, best time overlap, prefer events with a clip.
     try:
         async with aiohttp.ClientSession() as a:
-            data = await _fetch_json(
-                a, _base() + '/api/events?limit=%d&camera=%s'
-                % (_CLIPS['limit'], _camera()))
+            data = await _fetch_json(a, _base() + "/api/events?limit=%d&camera=%s" % (_CLIPS["limit"], _camera()))
     except Exception:
         return None
     if not isinstance(data, list):
         return None
     cands = []
     for e in data:
-        if not e.get('has_clip'):
+        if not e.get("has_clip"):
             continue
-        st = e.get('start_time')
+        st = e.get("start_time")
         if st is None:
             continue
         if abs(st - started.timestamp()) > _fallback_window_s():
@@ -116,6 +113,4 @@ async def resolve_event_id(session_id):
     if not cands:
         return None
     best = max(cands, key=lambda e: _score(e, started))
-    return {'event_id': best['id'],
-            'clip_url': _base() + '/api/events/' + best['id'] + '/clip.mp4',
-            'match': 'time'}
+    return {"event_id": best["id"], "clip_url": _base() + "/api/events/" + best["id"] + "/clip.mp4", "match": "time"}
