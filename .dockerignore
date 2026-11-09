@@ -9,3 +9,11 @@ tests
 .env
 frigate.env
 *.log
+conftest.py
+pyproject.toml
+.github/
+docs/
+*.md
+.env.example
+.artifacts/
+tools/

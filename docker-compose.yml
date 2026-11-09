@@ -27,11 +27,13 @@ services:
   # doorman reaches it at 127.0.0.1:10302 via DOORMAN_STT_BASE_URL. (Parakeet on
   # :10301 was the original A/B candidate; superseded 2026-10 and removed.)
   whisper:
-    image: doorman-whisper:local
+    image: ghcr.io/ryang3d/doorman-deluxe-stt:latest
     build:
       context: .
       dockerfile: deploy/whisper.Dockerfile
     container_name: whisper-stt
+    profiles:
+      - stt
     restart: unless-stopped
     network_mode: host
     environment:

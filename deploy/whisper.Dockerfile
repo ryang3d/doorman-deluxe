@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # faster-whisper (ctranslate2 runtime) - drop-in STT replacement for the Parakeet service.
 # ctranslate2 + nvidia-cu12 pull in the CUDA runtime deps. faster-whisper pulls av/onnxruntime/tokenizers.
 RUN pip install --no-cache-dir 'faster-whisper>=1.0,<2' 'ctranslate2>=4.5' \
-    'nvidia-cudnn-cu12>=9' 'nvidia-cublas-cu12>=12' \
+    'nvidia-cudnn-cu12>=9.22.0.52,<9.28.1' 'nvidia-cublas-cu12>=12' \
     fastapi 'uvicorn[standard]' python-multipart
 COPY deploy/whisper_server.py /app/whisper_server.py
 WORKDIR /app

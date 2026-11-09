@@ -20,6 +20,7 @@ Endpoints:
   GET  /api/config          config form schema + current values
   POST /api/config          write .env + hot-apply; reports restart-required
   POST /api/restart         re-exec the process in place (applies restart keys)
+  GET  /healthz             liveness probe (Docker HEALTHCHECK)
 """
 
 import json
@@ -83,6 +84,11 @@ async def api_status(request):
             "uptime_s": int(time.time() - _PROCESS_START),
         }
     )
+
+
+async def api_healthz(request):
+    """Liveness probe for the Docker HEALTHCHECK. No dependencies."""
+    return web.json_response({"ok": True, "version": _version()})
 
 
 # --------------------------------------------------------------- history
@@ -649,6 +655,7 @@ async def api_prompts_preview(request):
 def build_app():
     app = web.Application(client_max_size=64 * 1024 * 1024)  # 64 MB import cap
     app.router.add_get("/api/status", api_status)
+    app.router.add_get("/healthz", api_healthz)
     app.router.add_get("/api/history", api_history)
     app.router.add_get("/api/sessions/{id}", api_session)
     app.router.add_delete("/api/sessions/{id}", api_session_delete)
