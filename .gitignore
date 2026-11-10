@@ -21,3 +21,6 @@ tmp/
 .pytest_cache/
 .ruff_cache/
 .artifacts/
+
+# maintenance sync scripts (private tooling; excluded from public history by sync_public.sh)
+scripts/
