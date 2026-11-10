@@ -1,0 +1,38 @@
+name: Bug report
+description: Something is not working as expected.
+title: "[bug] "
+labels: [bug, triage]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected vs what actually happened.
+    required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Voice engine
+      options:
+        - gemini (default)
+        - local
+        - not sure
+    required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: Doorman version
+      description: From `docker run --rm ghcr.io/ryang3d/doorman-deluxe:latest --version` or `python src/doorman.py --version`, or the git commit if building from source.
+    required: true
+  - type: textarea
+    id: deploy
+    attributes:
+      label: Deployment
+      description: Docker or bare metal? Which OS? Frigate version? Camera model?
+    required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: '`docker logs doorman` around the incident (redact API keys / camera passwords).'
+    required: false

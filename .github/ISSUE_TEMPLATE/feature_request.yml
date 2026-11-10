@@ -1,0 +1,23 @@
+name: Feature request
+description: A new capability or improvement.
+title: "[feature] "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What do you want to happen?
+      description: Describe the capability and the problem it solves.
+    required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / use case
+      description: When would you use this? Any relevant prior art or design notes.
+    required: false
+  - type: textarea
+    id: effort
+    attributes:
+      label: Suggested scope (optional)
+      description: Rough shape of the change (config key, new module, UI screen...).
+    required: false

@@ -1,0 +1,5 @@
+blank_issue_enabled: true
+contact_links:
+  - name: Question / help
+    url: https://github.com/ryang3d/doorman-deluxe/discussions
+    about: Ask questions or discuss ideas in Discussions.

@@ -2,6 +2,10 @@
 
 # Doorman Deluxe
 
+[![CI](https://github.com/ryang3d/doorman-deluxe/actions/workflows/ci.yml/badge.svg)](https://github.com/ryang3d/doorman-deluxe/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/ryang3d/doorman-deluxe)](https://github.com/ryang3d/doorman-deluxe/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
 
 Everything runs locally, including the voice engine, which has two options:
@@ -102,6 +106,44 @@ are not set by anything in this repo:
 - **Firmware:** verified on `1.000.00AC002`. Newer firmwares may change the
   backchannel behavior; if the camera starts wedging after an update, re-check
   the settings above.
+
+## Quick start (official Docker image)
+
+Releases publish multi-arch (amd64/arm64) images to GHCR:
+`ghcr.io/ryang3d/doorman-deluxe:<version>` (and `:latest`).
+
+```bash
+# 1. Grab the config template and fill in your values
+curl -fsSL https://raw.githubusercontent.com/ryang3d/doorman-deluxe/main/.env.example -o doorman.env
+# edit doorman.env: DOORMAN_HASS_URL/TOKEN, DOORMAN_MQTT_*, and either
+# DOORMAN_GEMINI_API_KEY (default gemini engine) or the local-engine keys
+
+# 2. Run (Linux; host networking is required for media)
+docker run -d --name doorman \
+  --network host \
+  --env-file doorman.env \
+  -v doorman-data:/data \
+  -v doorman-snapshots:/snapshots \
+  ghcr.io/ryang3d/doorman-deluxe:latest
+
+# 3. Watch it come up - healthy = "trigger mode: ..." + "subscribed to frigate/events"
+docker logs -f doorman
+```
+
+The web UI is on `http://<host>:8090` (trusted LAN; no auth). Check the
+version: `docker run --rm ghcr.io/ryang3d/doorman-deluxe:latest --version`.
+
+**Local voice engine (optional):** the fully-local STT service is published
+as `ghcr.io/ryang3d/doorman-deluxe-stt:latest` (NVIDIA GPU required; the
+Whisper model downloads on first start). The included `docker-compose.yml`
+wires it up behind the `stt` profile: `docker compose --profile stt up -d`.
+
+On a registry client that needs a GHCR token for public pulls:
+
+```bash
+TOKEN=$(curl -s 'https://ghcr.io/token?scope=type:registry&scope=repository:ryang3d/doorman-deluxe:pull' | jq -r .token)
+echo "$TOKEN" | docker login ghcr.io -u ryang3d --password-stdin
+```
 
 ## Deploy (docker compose, recommended)
 
@@ -257,7 +299,9 @@ The model can notify the homeowner via HA `notify.all_devices`. If a doorbell fr
 ## Testing / troubleshooting
 
 - Door test: `docker compose logs -f doorman` then walk up or ring the bell; watch for `TRIGGER` and, per engine, the spoken-reply line: `[gemini said]` (Gemini) or `[visitor said]` / `[doorman said]` (local engine).
-- Unit tests: run from the repo root, one at a time: `.venv/bin/python tests/test_animal_trigger.py` (all config, decision, prompt, and reaction unit tests). Same pattern for `tests/test_config.py`, `tests/test_snapshot.py`, etc.
+- Unit tests: from the repo root, `.venv/bin/python -m pytest -q` (the 16 manual
+  diagnostic scripts under `tests/` are excluded via `conftest.py` - they run
+  ad-hoc against a live deployment; see CONTRIBUTING.md).
 - The UI/transcript/config-file tests are pytest-based: `.venv/bin/python -m pytest tests/test_ui_api.py tests/test_transcripts.py tests/test_env_file.py -q` (needs `pytest-aiohttp` for the API tests: `.venv/bin/pip install pytest-aiohttp`).
 - Animal test: publish a synthetic Frigate cat event to the MQTT broker and watch for `TRIGGER`, `animal notify`, and `[gemini said]` lines:
   `mosquitto_pub -h <mqtt> -p 1883 -u <user> -P <pass> -t frigate/events -m '{"type":"new","after":{"id":"cat-test-1","camera":"front_doorbell","label":"cat"}}'`
@@ -290,6 +334,21 @@ A living list of features being worked on, roughly ordered by priority and group
 - [x] **Export / import** - export a single visit, a checked subset, or the whole history to a zip (choose transcript / snapshot / clip via checkboxes), and re-import the same for backup or migration. **Done** - see the "Web UI" section above; `POST /api/sessions/{id}/export`, `POST /api/sessions/export-all`, `POST /api/sessions/import`.
 - [x] **History management** - delete a single recorded interaction or clear all of them, with a confirmation warning before anything is removed. **Done** - per-visit Delete + header Clear all in the Web UI; `DELETE /api/sessions/{id}`, `DELETE /api/history`.
 - [ ] **Listening status entity** - an HA entity that exposes whether Doorman is in an active conversation right now.
+
+## Releases & versioning
+
+Doorman Deluxe uses semantic versioning. Each `vX.Y.Z` git tag on `main`
+triggers `.github/workflows/release.yml`, which:
+
+1. Verifies the tag matches `src/version.py` (single source of truth - bump it
+   in the same commit as your changes).
+2. Builds the multi-arch Docker image (linux/amd64 + linux/arm64).
+3. Pushes it to `ghcr.io/ryang3d/doorman-deluxe:<tag>` and `:latest`.
+4. Creates the GitHub Release.
+
+Check the running version any time with `python src/doorman.py --version` or
+`GET /api/status` in the web UI. Pre-1.0: config keys and API endpoints are
+stable, but breaking changes may land in minor releases.
 
 ## License
 
