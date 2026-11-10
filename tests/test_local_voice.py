@@ -3,6 +3,7 @@
 
 import os
 import sys
+import time
 
 _here = os.path.dirname(os.path.abspath(__file__))
 for _cand in (os.path.join(_here, "..", "src"), "/app/src", os.path.join(_here, "src")):
@@ -100,7 +101,9 @@ def test_endpointer_noise_tolerance():
     FB = vl.VAD_FRAME_BYTES
     FR = b"\x00" * FB
     S = _speech_frames(1, off=3)[0]  # a loud real 30 ms speech frame (RMS ~7800 > min_rms 500)
-    T0 = 1000.0
+    # Uptime-relative start: time.monotonic() on a fresh CI runner can be < 1000 s,
+    # which would put these synthetic frames in the future and break the tail gate.
+    T0 = time.monotonic() - 3600.0
 
     def ts(i):  # synthetic monotonic ramp, 30ms cadence
         return T0 + i * 0.03
