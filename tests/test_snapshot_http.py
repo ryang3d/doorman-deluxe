@@ -2,7 +2,7 @@
 """Task 3 (HA-native): verify notify_ryan attaches a doorbell frame captured by
 HA camera.snapshot, served at HA /local. No container HTTP server, no SSH.
 
-Run: .venv/bin/python tests/test_snapshot_http.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_snapshot_http.py   (from the repo root)
 """
 
 import asyncio

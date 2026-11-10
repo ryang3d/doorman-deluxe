@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit test for snapshot retention/pruning (DOORMAN_SNAPSHOT_RETENTION).
 
-Run: .venv/bin/python tests/test_snapshot_retention.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_snapshot_retention.py   (from the repo root)
 """
 
 import os

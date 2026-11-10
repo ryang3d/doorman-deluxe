@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Config tests for DOORMAN_IGNORED_FACES.
 
-Run: .venv/bin/python tests/test_ignored_faces_config.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_ignored_faces_config.py   (from the repo root)
 """
 
 import os

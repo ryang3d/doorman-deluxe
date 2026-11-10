@@ -16,9 +16,9 @@ This combines two independently-verified pieces:
   - consumer-mode WebRTC talkback to go2rtc (Task 0.3, TRANSPORT.md / talkback_consumer_diag.py)
   - Gemini Live native-audio round-trip (Task 1.3, model gemini-3.1-flash-live-preview)
 
-Config read from ~/.hermes/profiles/home-admin/frigate.env:
+Config read from doorman_config (env vars / DOORMAN_PROFILE_ENV / DOORMAN_FRIGATE_ENV):
   FRIGATE_URL (go2rtc base, no admin login needed), GEMINI_API_KEY
-Camera mic RTSP creds are in the doorbell go2rtc stream / hardcoded below (admin/<doorbell-pass>)
+Camera mic RTSP creds come from DOORMAN_DOORBELL_USER/PASSWORD (default admin/<doorbell-pass>)
   - better: read from config, but keep in one place.
 
 Run:
@@ -781,7 +781,7 @@ async def camera_healthy(camera="front_doorbell", timeout_s=10, min_fps=0.5):
     go2rtc KEEPS that stale record after the camera stops answering, so the check
     passed while the camera's RTSP was unreachable - a pure false positive. Proof: at
     2026-09-10 09:29:00 the gate returned True on its first probe, ~1.5s before a dial
-    to <camera-ip>:554 timed out; three backchannel retries then burned 40s and the
+    to the camera's RTSP endpoint timed out; three backchannel retries then burned 40s and the
     interaction was skipped with no warning from the gate.
 
     HA's sensor.front_doorbell_camera_status_2 is no better as a gate: it polls HTTP
@@ -917,7 +917,7 @@ async def main_upstream_receiving(camera="front_doorbell", window_s=None, min_by
     if g2r:
         url = f"{g2r}/api/streams"
     else:
-        base = (cfg.get("FRIGATE_URL") or "http://<frigate-host>:5001").rstrip("/")
+        base = (cfg.get("FRIGATE_URL") or "http://127.0.0.1:5001").rstrip("/")
         url = f"{base}/api/go2rtc/streams"
 
     async def _fetch():

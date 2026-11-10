@@ -2,10 +2,6 @@
 
 # Doorman Deluxe
 
-> **Public version:** see `ryang3d/doorman-deluxe` (public). This private repo is the
-> development source of truth; the public repo is a clean, scrubbed export of `main`
-> (no camera password, no test snapshots).
-
 AI-speaking agentic doorbell for a privacy-focused homelab. When someone approaches or rings, Doorman Deluxe talks through the doorbell camera speaker, greets them per household policy, can snapshot the visitor, and notifies the homeowner on a phone.
 
 Everything runs locally, including the voice engine, which has two options:

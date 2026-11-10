@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for DOORMAN_TRIGGER_MODE / DOORMAN_DOORBELL_SENSOR config parsing.
 
-Run: .venv/bin/python tests/test_trigger_mode.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_trigger_mode.py   (from the repo root)
 """
 
 import os

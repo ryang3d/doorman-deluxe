@@ -751,7 +751,7 @@ async def doorbell_event_listener(handle_event, sensor="binary_sensor.doorbell_p
     import json as _json
 
     cfg = _dc.load()
-    hass_ws = (cfg.get("HASS_URL") or "http://<ha-host>:8123").replace("http://", "ws://").replace(
+    hass_ws = (cfg.get("HASS_URL") or "http://127.0.0.1:8123").replace("http://", "ws://").replace(
         "https://", "wss://"
     ) + "/api/websocket"
     token = cfg.get("HASS_TOKEN") or ""
@@ -855,7 +855,7 @@ async def doorbell_press_tracker(sensor="binary_sensor.doorbell_pressed"):
 
     cfg = _dc.load()
     sensor = sensor or (cfg.get("DOORMAN_DOORBELL_SENSOR") or "").strip()
-    hass_ws = (cfg.get("HASS_URL") or "http://<ha-host>:8123").replace("http://", "ws://").replace(
+    hass_ws = (cfg.get("HASS_URL") or "http://127.0.0.1:8123").replace("http://", "ws://").replace(
         "https://", "wss://"
     ) + "/api/websocket"
     token = cfg.get("HASS_TOKEN") or ""
@@ -960,7 +960,7 @@ async def doorzone_gate_listener(gate, sensor=None):
     sensor = sensor or (cfg.get("DOORMAN_PERSON_GATE") or "").strip()
     if not sensor:
         return
-    hass_http = (cfg.get("HASS_URL") or "http://<ha-host>:8123").rstrip("/")
+    hass_http = (cfg.get("HASS_URL") or "http://127.0.0.1:8123").rstrip("/")
     hass_ws = hass_http.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
     token = cfg.get("HASS_TOKEN") or ""
     if not token:

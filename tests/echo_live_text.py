@@ -12,7 +12,7 @@ import wave
 
 
 def load_key():
-    for line in open(os.path.expanduser("~/.hermes/profiles/home-admin/frigate.env")):
+    for line in open(os.path.expanduser(os.environ.get("DOORMAN_FRIGATE_ENV", "~/.config/doorman/frigate.env"))):
         if line.startswith("GEMINI_API_KEY="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return None
@@ -67,13 +67,13 @@ async def main():
 
     print("transcript:", transcripts)
     if audio_out:
-        with open(os.path.expanduser("~/doorman/out.raw"), "wb") as f:
+        with open("out.raw", "wb") as f:
             f.write(bytes(audio_out))
         print(f"SAVED {len(audio_out)} bytes -> out.raw")
         # Gemini Live native audio default sample rate is 24kHz pcm16; write wav
         for rate in (24000, 16000):
             try:
-                with wave.open(os.path.expanduser("~/doorman/out.wav"), "wb") as w:
+                with wave.open("out.wav", "wb") as w:
                     w.setnchannels(1)
                     w.setsampwidth(2)
                     w.setframerate(rate)

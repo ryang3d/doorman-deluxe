@@ -1,6 +1,6 @@
 # Doorman deployment / operations (Phase 4)
 
-Doorman now runs as a persistent systemd USER service on the doorman host (<doorman-host>),
+Doorman now runs as a persistent systemd USER service on the doorman host,
 the host where the working venv lives. It auto-starts, auto-restarts, and logs to journald.
 
 ## Service
@@ -10,7 +10,7 @@ the host where the working venv lives. It auto-starts, auto-restarts, and logs t
 - WorkingDirectory: ~/doorman/src  (so `import audio_bridge` resolves)
 - Restart=always, RestartSec=5  (auto-recovers from crash AND SIGTERM; Restart=on-failure
   treats SIGTERM as a clean stop and does NOT recover - verified 2026-09-08)
-- Enabled for autostart (lingering enabled for user ryan, so it runs without GUI login)
+- Enabled for autostart (lingering enabled for your user, so it runs without GUI login)
 
 ## Common operations
 
@@ -25,12 +25,12 @@ Killing the main PID with SIGTERM: service auto-restarts within ~5s and re-subsc
 to frigate/events (NRestarts increments). A healthy restart logs
 "INFO subscribed to frigate/events" with no DeprecationWarning (paho v2 callback API).
 
-## Config / credentials the service needs (NOT in repo - stay in home)
-- ~/.hermes/profiles/home-admin/.env        (HASS_URL/HASS_TOKEN, MQTT_USER/PASSWORD)
-- ~/.hermes/profiles/home-admin/frigate.env (FRIGATE_URL/USER/PASS, GEMINI_API_KEY)
-- SSH key ~/.hermes/profiles/home-admin/home/.ssh/id_ed25519_hass
-  (used by doorman_tools._publish_snapshot_to_ha to scp snapshots to HA www for notifications)
-- The service reads these absolute paths at runtime (doorman_tools / doorman config).
+## Config / credentials the service needs (NOT in repo - stay on the host)
+- ~/.config/doorman/profile.env        (HASS_URL/HASS_TOKEN, MQTT_USER/PASSWORD)
+- ~/.config/doorman/frigate.env (FRIGATE_URL/USER/PASS, GEMINI_API_KEY)
+  Override the locations with DOORMAN_PROFILE_ENV / DOORMAN_FRIGATE_ENV.
+- The service resolves these via DOORMAN_PROFILE_ENV / DOORMAN_FRIGATE_ENV
+  (defaulting to the paths above) at runtime (doorman_config).
 
 ## Behavior
 - Subscribes to Frigate MQTT `frigate/events`, filters front_doorbell person/cat/dog/face.

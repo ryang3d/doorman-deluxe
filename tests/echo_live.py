@@ -11,7 +11,7 @@ import wave
 
 
 def load_key():
-    for line in open(os.path.expanduser("~/.hermes/profiles/home-admin/frigate.env")):
+    for line in open(os.path.expanduser(os.environ.get("DOORMAN_FRIGATE_ENV", "~/.config/doorman/frigate.env"))):
         if line.startswith("GEMINI_API_KEY="):
             return line.split("=", 1)[1].strip().strip('"').strip("'")
     return None
@@ -82,7 +82,7 @@ async def main():
     for who, t in transcript:
         print(f"{who}: {t}")
     if audio_out:
-        with open(os.path.expanduser("~/doorman/out.raw"), "wb") as f:
+        with open("out.raw", "wb") as f:
             f.write(bytes(audio_out))
         print(f"SAVED {len(audio_out)} bytes audio -> out.raw")
         # Also wrap into a wav assuming L16 24kHz mono (Gemini default) - try common rates
@@ -90,7 +90,7 @@ async def main():
 
         for rate in (24000, 16000):
             try:
-                ow = os.path.expanduser("~/doorman/out.wav")
+                ow = "out.wav"
                 with wmod.open(ow, "wb") as w:
                     w.setnchannels(1)
                     w.setsampwidth(2)

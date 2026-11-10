@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for doorman_config.load(): env override, file fallback, defaults.
 
-Run: .venv/bin/python tests/test_config.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_config.py   (from the repo root)
 """
 
 import os
@@ -20,8 +20,8 @@ def _clear_doorman_env():
 def test_defaults_when_unset():
     _clear_doorman_env()
     cfg = dc.load()
-    assert cfg["MQTT_HOST"] == "<ha-host>", cfg["MQTT_HOST"]
-    assert cfg["FRIGATE_URL"] == "http://<frigate-host>:5001", cfg["FRIGATE_URL"]
+    assert cfg["MQTT_HOST"] == "127.0.0.1", cfg["MQTT_HOST"]
+    assert cfg["FRIGATE_URL"] == "http://127.0.0.1:5001", cfg["FRIGATE_URL"]
     assert cfg["FRONT_CAMERA"] == "front_doorbell"
     assert cfg["MQTT_PORT"] == 1883 and isinstance(cfg["MQTT_PORT"], int)
     # these are only in DEFAULTS (not in any profile file), so they prove the

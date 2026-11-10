@@ -14,34 +14,35 @@ file/default. Callers use load() once and pass the dict around.
 
 import os
 
-# Legacy config files this profile used (fallback so bare-metal needs no env).
-# Adjust these if your profile / config layout differs; when the files don't
-# exist they are simply skipped (env vars and the defaults below win).
-PROFILE_ENV = os.path.expanduser("~/.hermes/profiles/home-admin/.env")
-FRIGATE_ENV = os.path.expanduser("~/.hermes/profiles/home-admin/frigate.env")
+# Optional legacy config files (fallback sources when DOORMAN_* env vars are
+# unset). Overridable via DOORMAN_PROFILE_ENV / DOORMAN_FRIGATE_ENV; when the
+# files don't exist they are simply skipped (env vars and the defaults below
+# win).
+PROFILE_ENV = os.path.expanduser(os.environ.get("DOORMAN_PROFILE_ENV", "~/.config/doorman/profile.env"))
+FRIGATE_ENV = os.path.expanduser(os.environ.get("DOORMAN_FRIGATE_ENV", "~/.config/doorman/frigate.env"))
 
 # defaults matching the working deployment (2026-09-08)
 DEFAULTS = {
     # HA
-    "HASS_URL": "http://<ha-host>:8123",
+    "HASS_URL": "http://127.0.0.1:8123",
     "HASS_TOKEN": "",
     # MQTT broker carrying frigate/events
-    "MQTT_HOST": "<ha-host>",
+    "MQTT_HOST": "127.0.0.1",
     "MQTT_PORT": 1883,
     "MQTT_USER": "",
     "MQTT_PASSWORD": "",
     # Frigate / go2rtc
-    "FRIGATE_URL": "http://<frigate-host>:5001",
-    "GO2RTC_URL": "http://<frigate-host>:1984",
+    "FRIGATE_URL": "http://127.0.0.1:5001",
+    "GO2RTC_URL": "http://127.0.0.1:1984",
     "FRIGATE_TOPIC": "frigate/events",
     "FRONT_CAMERA": "front_doorbell",
     "DOORMAN_CLIP_FALLBACK_WINDOW_S": 300,
     # doorbell camera mic RTSP (visitor audio in)
-    "CAM_MIC_RTSP": ("rtsp://admin:<doorbell-pass>@<camera-ip>:554/cam/realmonitor?channel=1&subtype=1"),
+    "CAM_MIC_RTSP": ("rtsp://admin:<doorbell-pass>@127.0.0.1:554/cam/realmonitor?channel=1&subtype=1"),
     # AD410 native HTTP audio (amcrest-intercom HEAR path). Reading the visitor mic
     # over HTTP getAudio opens NO RTSP session, so the doorbell's backchannel/button
     # stay stable even while we talk (the AD410 crashes under concurrent RTSP pulls).
-    "DOORMAN_DOORBELL_HOST": "<camera-ip>",
+    "DOORMAN_DOORBELL_HOST": "127.0.0.1",
     "DOORMAN_DOORBELL_USER": "admin",
     "DOORMAN_DOORBELL_PASSWORD": "",
     # Visitor mic source: go2rtc RTSP RELAY, deliberately the MAIN restream
@@ -53,7 +54,7 @@ DEFAULTS = {
     #    relay is unconsumed after the 2026-09-10 detect-input change, so reading it
     #    would open a 3rd camera session (which wedges the AD410).
     # host:port is the go2rtc RTSP relay (Frigate's bundled go2rtc), not the HTTP API.
-    "DOORMAN_MIC_RTSP": "rtsp://<frigate-host>:8554/front_doorbell",
+    "DOORMAN_MIC_RTSP": "rtsp://127.0.0.1:8554/front_doorbell",
     # Which visitor-mic implementation to use:
     #   relay    (default) read DOORMAN_MIC_RTSP via ffmpeg. Proven to deliver audio.
     #   webtrack consume the twoway WebRTC connection's received-audio track. go2rtc
@@ -70,9 +71,9 @@ DEFAULTS = {
     "DOORMAN_VOICE_ENGINE": "gemini",
     # Local engine endpoints/params (only used when DOORMAN_VOICE_ENGINE=local).
     # Brain default: SGLang qwen3.8-27b on the LLM host. Fallback: Ollama on
-    # the doorman host -> set DOORMAN_LLM_BASE_URL=http://127.0.0.1:11434/v1,
+    # this host -> set DOORMAN_LLM_BASE_URL=http://127.0.0.1:11434/v1,
     # DOORMAN_LLM_MODEL=qwen3.5:9b, DOORMAN_LLM_API_KEY='ollama'.
-    "DOORMAN_LLM_BASE_URL": "http://<llm-host>:30000/v1",  # SGLang (the LLM host)
+    "DOORMAN_LLM_BASE_URL": "http://127.0.0.1:30000/v1",  # SGLang
     "DOORMAN_LLM_MODEL": "qwen3.8-27b",
     "DOORMAN_LLM_API_KEY": "",  # SGLang Bearer key; 'ollama' value for Ollama
     "DOORMAN_LLM_KEEP_ALIVE": "30m",  # Ollama only (ignored by SGLang, harmless)
@@ -207,7 +208,7 @@ DEFAULTS = {
     # matched against the recognized sub_label name. Empty = ignore nobody.
     "DOORMAN_IGNORED_FACES": "",
     # snapshots
-    "DOORMAN_SNAPSHOT_DIR": "~/doorman/snapshots",
+    "DOORMAN_SNAPSHOT_DIR": "/snapshots",
     # keep at most this many recent snapshots in the dir (0 = keep all / no pruning)
     "DOORMAN_SNAPSHOT_RETENTION": 25,
     # web UI (in-container aiohttp app; network_mode host => LAN reachable)

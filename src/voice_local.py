@@ -3,7 +3,7 @@
 
 STT:  Parakeet TDT 0.6B v3 service  -> POST {DOORMAN_STT_BASE_URL}/transcribe
 Brain: OpenAI-compatible /chat/completions (default SGLang qwen3.8-27b on
-       the LLM host; fallback Ollama qwen3.5:9b on the doorman host)
+       the LLM host; fallback Ollama qwen3.5:9b on this host)
 TTS:  Voicebox /generate (Chatterbox, Ryan's clone)
       EN -> engine=chatterbox_turbo,  es* -> engine=chatterbox (Multilingual)
 Audio in/out formats: visitor mic 16k s16le (ffmpeg pipeline), AI audio 24k s16le

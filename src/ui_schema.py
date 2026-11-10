@@ -20,7 +20,7 @@ FIELDS = [
         False,
         None,
         "",
-        "Base URL, e.g. http://<ha-host>:8123",
+        "Base URL, e.g. http://127.0.0.1:8123",
     ),
     (
         "HASS_TOKEN",

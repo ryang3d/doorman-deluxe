@@ -13,7 +13,7 @@ def parse(val):
 
 # from frigate.env: DOORMAN_PERSONALIZED_GREETING=false -> personalized OFF
 cfg = {}
-for line in open(os.path.expanduser("~/.hermes/profiles/home-admin/frigate.env")):
+for line in open(os.path.expanduser(os.environ.get("DOORMAN_FRIGATE_ENV", "~/.config/doorman/frigate.env"))):
     line = line.strip()
     if line.startswith("DOORMAN_PERSONALIZED_GREETING="):
         cfg["v"] = line.split("=", 1)[1]

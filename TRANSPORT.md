@@ -12,7 +12,7 @@ Status: Phase 0 COMPLETE (all 3 tasks VERIFIED 2026-09-08). Talkback audio-out t
   - webrtc:   POST /api/go2rtc/api/webrtc
   - ws:       GET  /api/go2rtc/api/ws   (websocket signaling)
 - The front_doorbell_twoway stream is declared on THIS go2rtc (Frigate's), NOT on the HA box. HA box go2rtc integration proxy paths all 404; HA pulls the stream from Frigate's go2rtc.
-- the public tunnel hostname is Cloudflare-fronted (origin hidden); not needed for direct programmatic access.
+- The Cloudflare-fronted public frontend (origin hidden) is not needed for direct programmatic access.
 
 ## Doorbell stream definitions (confirmed, raw)
 
@@ -34,7 +34,7 @@ Command verified working on this host (ffmpeg 6.1.1). Use subtype=1 (sub) or sub
 ## Verified: Frigate auth method (2026-09-08)
 
 Frigate 0.17.2 auth is COOKIE-based, not body-token.
-- Creds file: ~/.hermes/profiles/home-admin/frigate.env (mode 600 owner-only). Keys: FRIGATE_URL, FRIGATE_USER, FRIGATE_PASSWORD, FRIGATE_TOKEN (token optional/empty).
+- Creds file: ~/<user>/.hermes/profiles/home-admin/frigate.env (mode 600 owner-only). Keys: FRIGATE_URL, FRIGATE_USER, FRIGATE_PASSWORD, FRIGATE_TOKEN (token optional/empty).
 - Login:  POST /api/login  body {"user":"<user>","password":"<pw>"}  -> HTTP 200, empty body, sets cookie `frigate_token=<jwt>; HttpOnly; Path=/`. (422 if you send `username` key - must be `user`.)
 - Use: send the cookie jar on every call:  curl -b /tmp/cookies.txt <url>
 - Verified: /api/version -> 200 0.17.2-3d4dd3a ; /api/faces -> 200 {"Ryan":[file]} (so use -b cookie jar, not a Bearer header, for the Frigate API).
@@ -44,7 +44,7 @@ Frigate 0.17.2 auth is COOKIE-based, not body-token.
 /api/faces (authed) -> {"Ryan":["Ryan_1788904848.404153.webp"]}. At least Ryan's face registered. Native large-ArcFace face rec enabled; DB seeding partially underway.
 
 ## Gemini Live API (Phase 1, verified 2026-09-08)
-- API key: in ~/.hermes/profiles/home-admin/frigate.env as GEMINI_API_KEY (Ryan added it). Valid: 50 models accessible.
+- API key: in ~/<user>/.hermes/profiles/home-admin/frigate.env as GEMINI_API_KEY (Ryan added it). Valid: 50 models accessible.
 - Model string (VERIFIED working): `gemini-3.1-flash-live-preview`
 - Config: {"response_modalities": ["AUDIO"]}
 - Connect: `client.aio.live.connect(model=..., config=...)` from google.genai (SDK 2.22.0)

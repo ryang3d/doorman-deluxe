@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for cat/dog recognition handling in Doorman's Frigate trigger.
 
-Run: .venv/bin/python tests/test_animal_trigger.py   (from ~/doorman)
+Run: .venv/bin/python tests/test_animal_trigger.py   (from the repo root)
 """
 
 import asyncio

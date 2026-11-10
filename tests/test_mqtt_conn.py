@@ -12,7 +12,7 @@ import paho.mqtt.client as mqtt
 
 def creds():
     d = {}
-    for line in open(os.path.expanduser("~/.hermes/profiles/home-admin/.env")):
+    for line in open(os.path.expanduser(os.environ.get("DOORMAN_PROFILE_ENV", "~/.config/doorman/profile.env"))):
         line = line.strip()
         if line.startswith(("MQTT_USER=", "MQTT_PASSWORD=")):
             k, v = line.split("=", 1)
@@ -38,7 +38,7 @@ async def main():
     c.username_pw_set(user, pw)
     c.on_connect = on_connect
     c.on_message = on_message
-    c.connect("<ha-host>", 1883, 60)
+    c.connect("127.0.0.1", 1883, 60)
     c.subscribe("frigate/events")
 
     def run():

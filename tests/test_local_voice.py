@@ -384,7 +384,7 @@ def main():
     cfg = dc.load()
     check("engine default gemini", cfg.get("DOORMAN_VOICE_ENGINE"), "gemini")
     check("llm model default", cfg.get("DOORMAN_LLM_MODEL"), "qwen3.8-27b")
-    check("llm base url default", cfg.get("DOORMAN_LLM_BASE_URL"), "http://<llm-host>:30000/v1")
+    check("llm base url default", cfg.get("DOORMAN_LLM_BASE_URL"), "http://127.0.0.1:30000/v1")
     check("tts url default", cfg.get("DOORMAN_TTS_BASE_URL"), "http://127.0.0.1:17600")
     check("tts engine en", cfg.get("DOORMAN_TTS_ENGINE_EN"), "chatterbox_turbo")
     check("stt url default", cfg.get("DOORMAN_STT_BASE_URL"), "http://127.0.0.1:10301")

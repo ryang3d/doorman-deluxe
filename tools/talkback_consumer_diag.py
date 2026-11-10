@@ -28,7 +28,7 @@ log = logging.getLogger("diag")
 
 def load_creds():
     d = {}
-    for line in open(os.path.expanduser("~/.hermes/profiles/home-admin/frigate.env")):
+    for line in open(os.path.expanduser(os.environ.get("DOORMAN_FRIGATE_ENV", "~/.config/doorman/frigate.env"))):
         line = line.strip()
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
@@ -92,7 +92,7 @@ async def inspect_stream(base, cookie_header, name):
                     if isinstance(item, dict):
                         u = item.get("url", "")
                         med = item.get("medias", [])
-                        # cameras source url contains <camera-ip>
+                        # cameras source url contains the camera IP
                         print(f"  {role}: {u[:90]}  medias={med}")
 
 
