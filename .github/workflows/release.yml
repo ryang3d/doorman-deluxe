@@ -1,0 +1,99 @@
+name: Release
+
+# Tagged release: builds the multi-arch Docker image, pushes it to GHCR
+# (ghcr.io/ryang3d/doorman-deluxe), and creates a GitHub Release.
+# Trigger: push a tag vX.Y.Z where X.Y.Z matches src/version.py.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify tag matches src/version.py
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(sed -n 's/^__version__ = "\(.*\)$/\1/p' src/version.py)"
+          if [ -z "$ver" ] || [ "$tag" != "$ver" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match src/version.py ($ver)"
+            exit 1
+          fi
+          echo "Building doorman-deluxe $tag"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make GHCR package public
+        run: |
+          curl -fsSL -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d '{"name":"package","package":"doorman-deluxe","package-type":"container","visibility":"public"}' \
+            https://api.github.com/registry/scopes
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            DOORMAN_VERSION=${GITHUB_REF_NAME#v}
+          tags: |
+            ghcr.io/ryang3d/doorman-deluxe:${{ github.ref_name }}
+            ghcr.io/ryang3d/doorman-deluxe:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Make STT GHCR package public
+        run: |
+          curl -fsSL -X PATCH \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d '{"name":"package","package":"doorman-deluxe-stt","package-type":"container","visibility":"public"}' \
+            https://api.github.com/registry/scopes
+
+      - name: Build and push STT image (local voice engine)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/whisper.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/ryang3d/doorman-deluxe-stt:${{ github.ref_name }}
+            ghcr.io/ryang3d/doorman-deluxe-stt:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            --title "Doorman Deluxe $tag" \
+            --notes "Official Docker images: docker pull ghcr.io/ryang3d/doorman-deluxe:$tag (main service) and ghcr.io/ryang3d/doorman-deluxe-stt:$tag (optional local-voice STT). See README quick start."
