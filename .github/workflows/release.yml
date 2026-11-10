@@ -46,12 +46,16 @@ jobs:
 
       - name: Make GHCR package public
         run: |
+          # PATCH /registry/scopes only works on packages that already exist;
+          # on the very first release the package doesn't exist yet (404) and
+          # the buildx push creates it (public, matching this public repo).
           curl -fsSL -X PATCH \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token *** secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -d '{"name":"package","package":"doorman-deluxe","package-type":"container","visibility":"public"}' \
-            https://api.github.com/registry/scopes
+            https://api.github.com/registry/scopes \
+            || echo "::notice::package not in GHCR yet; first push creates it"
 
       - name: Build and push image
         uses: docker/build-push-action@v6
@@ -69,12 +73,14 @@ jobs:
 
       - name: Make STT GHCR package public
         run: |
+          # Same as above: PATCH only touches existing packages; tolerate 404.
           curl -fsSL -X PATCH \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token *** secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -d '{"name":"package","package":"doorman-deluxe-stt","package-type":"container","visibility":"public"}' \
-            https://api.github.com/registry/scopes
+            https://api.github.com/registry/scopes \
+            || echo "::notice::package not in GHCR yet; first push creates it"
 
       - name: Build and push STT image (local voice engine)
         uses: docker/build-push-action@v6
