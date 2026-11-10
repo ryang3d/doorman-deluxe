@@ -1,6 +1,6 @@
 services:
   doorman:
-    image: doorman:local
+    image: ghcr.io/ryang3d/doorman-deluxe:latest
     build: .
     container_name: doorman
     # host networking: aiortc/WebRTC talks UDP to go2rtc (Frigate :8555) and the
