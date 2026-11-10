@@ -24,7 +24,7 @@ jobs:
       - name: Verify tag matches src/version.py
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          ver="$(sed -n 's/^__version__ = "\(.*\)$/\1/p' src/version.py)"
+          ver="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/version.py)"
           if [ -z "$ver" ] || [ "$tag" != "$ver" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match src/version.py ($ver)"
             exit 1
